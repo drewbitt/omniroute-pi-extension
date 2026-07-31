@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 import {
-  createAgentSessionFromServices,
+  createAgentSession,
   createAgentSessionServices,
+  DefaultResourceLoader,
   SessionManager,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -16,13 +18,16 @@ import {
  *
  * Source-backed contract (read-only reference, not imported):
  * - pi-subagents built-ins use `extensions: true`
- * - agent-runner passes the parent's hidden modelRuntime into createAgentSession
- *   so parent-registered providers remain resolvable without a TUI
+ * - agent-runner constructs an independent child DefaultResourceLoader, then
+ *   calls public createAgentSession({ modelRuntime: parentModelRuntime,
+ *   resourceLoader: childLoader, model, sessionManager, ... }) so parent-
+ *   registered providers remain resolvable without a TUI
  * - createAgentSessionServices applies extension provider registrations then
  *   modelRuntime.refresh({ allowNetwork: false }) so models-store restore works
  *
  * This suite covers the ordinary worker path. Isolated agents or
- * `extensions: false` intentionally skip extension tools; those are not promised.
+ * `extensions: false` / user-disabled / excluded configurations intentionally
+ * skip extension tools; those are not promised.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -147,22 +152,113 @@ describe("OmniRoute subagent / headless model availability", () => {
     assert.equal(parentModel.baseUrl, FIXTURE_BASE_URL);
     assert.equal(parentModel.api, "openai-responses");
 
-    // Ordinary pi-subagents child path: share the parent's modelRuntime (no TUI hooks required).
-    const { session: childSession } = await createAgentSessionFromServices({
-      services: parentServices,
-      sessionManager: SessionManager.inMemory(cwd),
+    // Ordinary pi-subagents child path (agent-runner.ts): independent child
+    // DefaultResourceLoader + public createAgentSession with parent modelRuntime.
+    // Fails if createAgentSession ignores/replaces the passed parent runtime or
+    // if OmniRoute is only reachable via the parent's services object graph.
+    const childSettingsManager = SettingsManager.create(cwd, agentDir);
+    const childLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager: childSettingsManager,
+      // Explicit path mirrors ordinary additional-extension / package discovery;
+      // default discovery also finds this package via package.json "pi.extensions".
+      additionalExtensionPaths: [extensionPath],
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+    });
+    await childLoader.reload();
+
+    assert.notEqual(
+      childLoader,
+      parentServices.resourceLoader,
+      "child DefaultResourceLoader must be independently constructed",
+    );
+
+    const childSessionManager = SessionManager.inMemory(cwd);
+    const { session: childSession, extensionsResult: childExtensionsResult } = await createAgentSession({
+      cwd,
+      agentDir,
+      modelRuntime: parentServices.modelRuntime,
+      resourceLoader: childLoader,
+      sessionManager: childSessionManager,
+      settingsManager: childSettingsManager,
       model: parentModel,
       noTools: "all",
     });
     disposers.push(() => childSession.dispose());
 
-    assert.equal(childSession.modelRuntime, parentServices.modelRuntime, "child reuses parent modelRuntime");
-    const childResolved = childSession.modelRuntime.getModel("omniroute", FIXTURE_MODEL_ID);
-    assert.ok(childResolved, "child modelRuntime must still resolve OmniRoute after session construction");
-    assert.equal(childResolved.id, FIXTURE_MODEL_ID);
+    assert.notEqual(
+      childSession.resourceLoader,
+      parentServices.resourceLoader,
+      "child session must keep the independently constructed resourceLoader",
+    );
+    assert.equal(
+      childSession.resourceLoader,
+      childLoader,
+      "child session should use the passed child resourceLoader instance",
+    );
+    assert.equal(
+      childSession.modelRuntime,
+      parentServices.modelRuntime,
+      "child must share only the parent modelRuntime as intended (not a fresh runtime)",
+    );
+    assert.equal(
+      childSession.sessionManager,
+      childSessionManager,
+      "child session must use the distinct in-memory SessionManager",
+    );
+
+    assert.equal(
+      childExtensionsResult.errors.length,
+      0,
+      `child createAgentSession should not report extension load errors: ${JSON.stringify(childExtensionsResult.errors)}`,
+    );
+    assert.ok(
+      childExtensionsResult.extensions.some((ext) => ext.path === extensionPath || ext.resolvedPath === extensionPath),
+      "child loader must surface the OmniRoute extension path",
+    );
+
+    // Explicit parent-resolved model is selected without tools/provider calls or TUI hooks.
     assert.ok(childSession.model, "child session should select the explicit OmniRoute model");
     assert.equal(childSession.model.provider, "omniroute");
     assert.equal(childSession.model.id, FIXTURE_MODEL_ID);
+    assert.equal(childSession.model.api, "openai-responses");
+    assert.equal(childSession.model.baseUrl, FIXTURE_BASE_URL);
+
+    // Child extension bind re-registers OmniRoute onto the shared parent runtime (not a
+    // parent-services-only graph). registerProvider kicks off a fire-and-forget offline
+    // refresh, so wait for that settle before catalog lookups — same parent runtime.
+    assert.ok(
+      childSession.modelRuntime.getRegisteredProviderIds?.().includes("omniroute") ||
+        childSession.modelRuntime.getProvider("omniroute"),
+      "OmniRoute provider must remain registered on the shared parent modelRuntime",
+    );
+    assert.equal(
+      childSession.modelRuntime.hasConfiguredAuth("omniroute"),
+      true,
+      "shared parent runtime must retain configured OmniRoute auth after child construction",
+    );
+    await childSession.modelRuntime.refresh({ allowNetwork: false });
+    assert.equal(
+      childSession.modelRuntime,
+      parentServices.modelRuntime,
+      "refresh must not replace the parent modelRuntime identity",
+    );
+
+    const childResolved = childSession.modelRuntime.getModel("omniroute", FIXTURE_MODEL_ID);
+    assert.ok(
+      childResolved,
+      "shared parent modelRuntime must resolve OmniRoute after child createAgentSession + offline refresh",
+    );
+    assert.equal(childResolved.id, FIXTURE_MODEL_ID);
+    assert.equal(childResolved.provider, "omniroute");
+    assert.equal(childResolved.baseUrl, FIXTURE_BASE_URL);
+    // Selected model object remains usable even across the re-registration refresh window.
+    assert.equal(childSession.model.id, FIXTURE_MODEL_ID);
+    assert.equal(childSession.model.provider, "omniroute");
 
     // Standalone headless/SDK path: new services with the same agentDir restore from models-store
     // (not only by sharing the parent object graph).
