@@ -52,6 +52,13 @@ This document records the runtime features and invariants implemented by the Omn
 | `PI_CODING_AGENT_DIR` | Base directory for the default legacy cache path. |
 | `PI_OFFLINE` | Interpreted by Pi as `allowNetwork: false` during refresh. |
 
+## Subagent and headless availability
+
+- OmniRoute is a standard Pi `registerProvider` + `refreshModels` provider. After registration and offline store restore, models are resolved through Pi's public `modelRuntime.getModel('omniroute', id)`.
+- Ordinary subagent/worker sessions that inherit the parent `modelRuntime` (pi-subagents default path with `extensions: true`) keep the same OmniRoute catalog without requiring interactive TUI or `session_start` hooks.
+- A fresh headless/SDK services instance with the same agent directory can restore the catalog from Pi's `models-store.json` via `createAgentSessionServices` + `refresh({ allowNetwork: false })`.
+- Intentional exclusions: agents with `extensions: false` or `isolated: true` do not load extension tools; this guarantee covers the ordinary shared-`modelRuntime` worker path and store-backed standalone restore, not user-disabled extension loading.
+
 ## Security invariants
 
 - Never log, warn, snapshot, or embed configured OmniRoute URL or API key values.

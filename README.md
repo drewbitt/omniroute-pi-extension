@@ -22,6 +22,7 @@ Requires Pi coding-agent APIs available in upstream `@earendil-works/pi-coding-a
 - Parent cancellation publishes no partial catalog and writes no store entry.
 - Primary discovery failures reject through Pi (no `console.warn`, no configured URL/key in error text).
 - Keeps conversational text models only (excludes embedding/image/video/audio and non-text output), while preserving suffix folding and synthetic Codex ultra alias filtering.
+- Stays available to ordinary subagent and headless/SDK child sessions: once registered into Pi's `modelRuntime` and restored from the provider model store, OmniRoute resolves without TUI or session lifecycle hooks. Default pi-subagents workers pass the parent's `modelRuntime` and load extensions; intentional `extensions: false` / isolated agents are out of scope for this guarantee.
 
 ## Configuration
 
@@ -44,7 +45,7 @@ Authoritative persistence after import is Pi's provider-scoped models store.
 
 ## Commands
 
-- `npm test` — run the test suite, including the two-turn Responses consumer contract against the upstream Pi-AI bundled with the ordinary `@earendil-works/pi-coding-agent` development dependency.
+- `npm test` — run the test suite, including the two-turn Responses consumer contract against the upstream Pi-AI bundled with the ordinary `@earendil-works/pi-coding-agent` development dependency, plus the subagent/headless model-availability regression.
 - `npm run check` — run syntax checks and tests.
 - `npm run check:syntax` — run the Node syntax check used by the test flow.
 

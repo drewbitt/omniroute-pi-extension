@@ -31,3 +31,7 @@ _Avoid_: session_start refresh, extension refresh queue
 **Interactive Session Startup**:
 Startup of a Pi session. Pi decides offline/network and force refresh; the extension only implements `refreshModels`.
 _Avoid_: print startup, RPC startup
+
+**Subagent / Headless Model Availability**:
+Guarantee that the OmniRoute Provider remains resolvable for ordinary child workers that share the parent's `modelRuntime`, and for standalone headless/SDK services that restore the Provider Model Store offline. Does not require TUI hooks. Does not cover intentional `extensions: false` / isolated agents that skip extension loading.
+_Avoid_: main-TUI-only provider, interactive-only registration
