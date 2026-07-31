@@ -635,11 +635,52 @@ describe("OmniRoute native refreshModels provider", () => {
     controller.abort();
     await assert.rejects(promise, (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.name, /AbortError|Error/);
+      assert.equal(error.name, "AbortError");
+      assert.doesNotMatch(error.message, /^timeout$/i);
       return true;
     });
     assert.equal(memory.writes.length, 0);
     server.releaseModelResponses();
+  });
+
+  it("independent timeout before response headers yields AbortError without leaking timeout reason", async () => {
+    const server = await createFixtureServer({ holdPrimary: true });
+    servers.push(server);
+    process.env.OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS = "40";
+    const harness = await boot(server.baseUrl);
+    const registration = provider(harness);
+    const memory = createMemoryStore();
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await assert.rejects(
+        registration.config.refreshModels!({
+          store: memory.store,
+          allowNetwork: true,
+          force: true,
+          credential: { type: "api_key", key: "test-key" },
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.name, "AbortError");
+          assert.doesNotMatch(error.message, /timeout/i);
+          assert.doesNotMatch(error.message, /Model discovery failed/i);
+          return true;
+        },
+      );
+      // Allow any delayed rejection to surface if present.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(unhandled.length, 0, "timeout path must not leave unhandled rejections");
+      assert.equal(memory.writes.length, 0);
+      assert.equal(server.responses, 0, "headers must still be withheld");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      server.releaseModelResponses();
+    }
   });
 
   it("primary failures are sanitized and do not console.warn discovery errors", async () => {

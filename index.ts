@@ -591,6 +591,20 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+function toAbortError(): Error {
+  const abortError = new Error("The operation was aborted");
+  abortError.name = "AbortError";
+  return abortError;
+}
+
+function throwNormalizedAbort(parent: AbortSignal | undefined, signal: AbortSignal): never {
+  // Parent abort and independent request timeout must surface as AbortError only.
+  // Never leak internal abort reasons such as Error("timeout").
+  throwIfAborted(parent);
+  if (signal.aborted) throw toAbortError();
+  throw toAbortError();
+}
+
 async function fetchJsonWithTimeout<T>(
   url: string,
   headers: Record<string, string>,
@@ -599,8 +613,17 @@ async function fetchJsonWithTimeout<T>(
 ): Promise<T> {
   const { signal, dispose } = createTimeoutSignal(parent, timeoutMs);
   try {
-    const response = await fetch(url, { headers, signal });
+    let response: Response;
+    try {
+      response = await fetch(url, { headers, signal });
+    } catch (error) {
+      // Timeout/parent abort before headers: Node may surface abort reason as raw Error("timeout").
+      if (isAbortError(error)) throw error;
+      if (signal.aborted || parent?.aborted) throwNormalizedAbort(parent, signal);
+      throw error;
+    }
     throwIfAborted(parent);
+    if (signal.aborted) throw toAbortError();
     if (!response.ok) {
       throw primaryDiscoveryError(response.status);
     }
@@ -609,12 +632,7 @@ async function fetchJsonWithTimeout<T>(
     } catch (error) {
       // Abort during body read must remain AbortError (parent or timeout), not a discovery message.
       if (isAbortError(error)) throw error;
-      throwIfAborted(parent);
-      if (signal.aborted) {
-        const abortError = new Error("The operation was aborted");
-        abortError.name = "AbortError";
-        throw abortError;
-      }
+      if (signal.aborted || parent?.aborted) throwNormalizedAbort(parent, signal);
       throw primaryDiscoveryInvalidBodyError(response.status);
     }
   } finally {
