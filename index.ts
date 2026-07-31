@@ -89,6 +89,7 @@ interface RefreshModelsContext {
   store: {
     read(): Promise<{ models?: readonly unknown[]; checkedAt?: number } | undefined>;
     write(entry: { models: readonly unknown[]; checkedAt?: number }): Promise<void>;
+    delete(): Promise<void>;
   };
   allowNetwork: boolean;
   force?: boolean;
@@ -745,10 +746,40 @@ function isFresh(checkedAt: number | undefined, force: boolean | undefined) {
   return Date.now() - checkedAt < CATALOG_REFRESH_INTERVAL_MS;
 }
 
+function normalizeBaseUrlForCompare(value: string) {
+  return value.trim().replace(/\/+$/, "");
+}
+
+/**
+ * True when a non-empty stored catalog is safe to project for the current base URL.
+ * Missing/malformed baseUrl or any entry that does not match the current URL is foreign.
+ */
+function storedCatalogMatchesBaseUrl(models: readonly unknown[] | undefined, baseUrl: string): boolean {
+  if (!Array.isArray(models) || models.length === 0) return true;
+  const expected = normalizeBaseUrlForCompare(baseUrl);
+  for (const entry of models) {
+    if (!isRecord(entry)) return false;
+    if (typeof entry.baseUrl !== "string") return false;
+    const stored = normalizeBaseUrlForCompare(entry.baseUrl);
+    if (!stored || stored !== expected) return false;
+  }
+  return true;
+}
+
 async function refreshModels(baseUrl: string, context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
   throwIfAborted(context.signal);
 
   let stored = await context.store.read();
+
+  // Strict URL isolation: never project IDs learned from another base URL.
+  if (stored?.models && Array.isArray(stored.models) && stored.models.length > 0) {
+    if (!storedCatalogMatchesBaseUrl(stored.models, baseUrl)) {
+      throwIfAborted(context.signal);
+      await context.store.delete();
+      stored = undefined;
+    }
+  }
+
   let models = providerModelsFromStore(stored?.models);
   let checkedAt = stored?.checkedAt;
 

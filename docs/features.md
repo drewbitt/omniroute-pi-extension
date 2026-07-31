@@ -13,10 +13,14 @@ This document records the runtime features and invariants implemented by the Omn
 
 ## Catalog persistence
 
-- Authoritative catalog storage is Pi's provider-scoped models store (`context.store`).
-- On first upgraded run, a valid legacy schemaVersion=2 OmniRoute cache matching the configured base URL is imported into the Pi store without copying secrets.
-- The legacy cache file is retained for downgrade compatibility and is not rewritten by discovery.
-- Ordinary refreshes reuse a stored catalog fresher than four hours; `force` still performs network discovery.
+- **Ownership**: Pi owns persistence in the provider-scoped models store (`context.store`, typically the `omniroute` entry in `~/.pi/agent/models-store.json`). The extension owns four-hour freshness evaluation and refresh/import behavior.
+- Stored dynamic model rows include `baseUrl` (written by discovery/import).
+- **URL changes**: Before projecting or stamping freshness, if a non-empty store has missing/malformed `baseUrl` or any row whose normalized base URL (trailing slash ignored) differs from the current `OMNIROUTE_BASE_URL`, the extension immediately calls `context.store.delete()` and treats the catalog as empty. It never serves IDs learned from another URL, even if a later refresh fails offline or without credentials.
+- After a URL-switch delete, a current-URL-matching legacy schemaVersion=2 cache may still import once; otherwise offline/unavailable remains empty. Online discovery writes only the current URL catalog atomically.
+- On first upgraded run (empty matching store), a valid legacy schemaVersion=2 OmniRoute cache matching the configured base URL is imported into the Pi store without copying secrets.
+- The legacy per-URL cache file is retained for downgrade compatibility and is not rewritten or deleted by discovery.
+- **Expiry**: ordinary refreshes reuse a stored catalog when `checkedAt` is within four hours; older catalogs revalidate when network is allowed.
+- **Forced refresh**: Pi-native `context.force` bypasses the four-hour window (`pi update --models` invokes force) and still hits the network when allowed.
 
 ## Discovery refresh
 

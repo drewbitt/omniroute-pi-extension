@@ -31,6 +31,7 @@ interface RefreshContext {
   store: {
     read(): Promise<{ models?: readonly unknown[]; checkedAt?: number } | undefined>;
     write(entry: { models: readonly unknown[]; checkedAt?: number }): Promise<void>;
+    delete(): Promise<void>;
   };
   allowNetwork: boolean;
   force?: boolean;
@@ -94,8 +95,12 @@ function createHarness(): ExtensionHarness {
 function createMemoryStore(initial?: { models?: readonly unknown[]; checkedAt?: number }) {
   let entry = initial ? structuredClone(initial) : undefined;
   const writes: Array<{ models: readonly unknown[]; checkedAt?: number }> = [];
+  let deletes = 0;
   return {
     writes,
+    get deletes() {
+      return deletes;
+    },
     store: {
       async read() {
         return entry ? structuredClone(entry) : undefined;
@@ -104,7 +109,26 @@ function createMemoryStore(initial?: { models?: readonly unknown[]; checkedAt?: 
         entry = structuredClone(next);
         writes.push(structuredClone(next));
       },
+      async delete() {
+        entry = undefined;
+        deletes += 1;
+      },
     },
+  };
+}
+
+function storedProviderModel(id: string, baseUrl: string, name = id) {
+  return {
+    id,
+    name,
+    provider: "omniroute",
+    api: "openai-responses",
+    baseUrl,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000,
+    maxTokens: 100,
   };
 }
 
@@ -458,20 +482,7 @@ describe("OmniRoute native refreshModels provider", () => {
     const registration = provider(harness);
     const memory = createMemoryStore({
       checkedAt: Date.now(),
-      models: [
-        {
-          id: "fresh-model",
-          name: "Fresh",
-          provider: "omniroute",
-          api: "openai-responses",
-          baseUrl: server.baseUrl,
-          reasoning: false,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 1000,
-          maxTokens: 100,
-        },
-      ],
+      models: [storedProviderModel("fresh-model", server.baseUrl, "Fresh")],
     });
 
     const models = await registration.config.refreshModels!({
@@ -483,6 +494,104 @@ describe("OmniRoute native refreshModels provider", () => {
     assert.deepEqual(modelIds(models), ["fresh-model"]);
     assert.equal(server.requests, 0);
     assert.equal(memory.writes.length, 0);
+    assert.equal(memory.deletes, 0);
+  });
+
+  it("deletes a fresh store from another base URL offline and returns empty without write or network", async () => {
+    const urlA = "http://127.0.0.1:9/v1";
+    const urlB = "http://127.0.0.1:10/v1";
+    const harness = await boot(urlB);
+    const registration = provider(harness);
+    const memory = createMemoryStore({
+      checkedAt: Date.now(),
+      models: [storedProviderModel("url-a-model", urlA)],
+    });
+
+    const models = await registration.config.refreshModels!({
+      store: memory.store,
+      allowNetwork: false,
+    });
+
+    assert.deepEqual(modelIds(models), []);
+    assert.equal(memory.deletes, 1);
+    assert.equal(memory.writes.length, 0);
+    assert.equal(await memory.store.read(), undefined);
+  });
+
+  it("deletes a mismatched store before online discovery and writes only the current-URL catalog", async () => {
+    const urlA = "http://127.0.0.1:9/v1";
+    const server = await createFixtureServer();
+    servers.push(server);
+    process.env.OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS = "2000";
+    const harness = await boot(server.baseUrl);
+    const registration = provider(harness);
+    const memory = createMemoryStore({
+      checkedAt: Date.now(),
+      models: [storedProviderModel("url-a-model", urlA)],
+    });
+
+    const models = await registration.config.refreshModels!({
+      store: memory.store,
+      allowNetwork: true,
+      credential: { type: "api_key", key: "test-key" },
+    });
+
+    assert.ok(models.length > 0);
+    assert.ok(!modelIds(models).includes("url-a-model"));
+    assert.equal(memory.deletes, 1);
+    assert.equal(server.requests, 1);
+    assert.equal(memory.writes.length, 1);
+    const written = memory.writes[0]?.models ?? [];
+    assert.ok(written.length > 0);
+    for (const entry of written) {
+      assert.equal((entry as { baseUrl?: string }).baseUrl, server.baseUrl);
+    }
+  });
+
+  it("treats trailing-slash base URL differences as the same cache and does not delete", async () => {
+    const baseUrl = "http://127.0.0.1:9/v1";
+    const harness = await boot(baseUrl);
+    const registration = provider(harness);
+    const memory = createMemoryStore({
+      checkedAt: Date.now(),
+      models: [storedProviderModel("slash-model", `${baseUrl}/`)],
+    });
+
+    const models = await registration.config.refreshModels!({
+      store: memory.store,
+      allowNetwork: false,
+    });
+
+    assert.deepEqual(modelIds(models), ["slash-model"]);
+    assert.equal(memory.deletes, 0);
+    assert.equal(memory.writes.length, 0);
+  });
+
+  it("deletes stored catalogs with missing or malformed baseUrl and returns empty offline", async () => {
+    const baseUrl = "http://127.0.0.1:9/v1";
+    const harness = await boot(baseUrl);
+    const registration = provider(harness);
+
+    for (const models of [
+      [{ ...storedProviderModel("missing-base", baseUrl), baseUrl: undefined }],
+      [{ ...storedProviderModel("empty-base", baseUrl), baseUrl: "" }],
+      [{ ...storedProviderModel("bad-base", baseUrl), baseUrl: 42 }],
+    ]) {
+      const memory = createMemoryStore({
+        checkedAt: Date.now(),
+        models: models as unknown as readonly unknown[],
+      });
+
+      const result = await registration.config.refreshModels!({
+        store: memory.store,
+        allowNetwork: false,
+      });
+
+      assert.deepEqual(modelIds(result), []);
+      assert.equal(memory.deletes, 1);
+      assert.equal(memory.writes.length, 0);
+      assert.equal(await memory.store.read(), undefined);
+    }
   });
 
   it("force refresh bypasses freshness and rewrites the store from the primary catalog", async () => {

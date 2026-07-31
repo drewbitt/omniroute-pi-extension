@@ -14,8 +14,10 @@ Requires Pi coding-agent APIs available in upstream `@earendil-works/pi-coding-a
 
 - Reads `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`.
 - Registers `omniroute` once with Pi's built-in `openai-responses` API and a public `refreshModels(context)` implementation.
-- Restores the catalog from Pi's provider-scoped model store; on first upgrade, imports a valid legacy OmniRoute cache into that store without copying secrets, and keeps the legacy file for downgrade.
-- Follows Pi's four-hour remote-catalog freshness window; `force` refreshes still hit the network.
+- Restores the catalog from Pi's provider-scoped model store (`omniroute` in `models-store.json`); the extension evaluates four-hour `checkedAt` freshness and refresh behavior.
+- On first upgrade with an empty matching store, imports a valid legacy OmniRoute cache for the current base URL without copying secrets, and keeps the per-URL legacy file for downgrade (not rewritten).
+- If the store holds models from a different base URL (or missing/malformed stored `baseUrl`), deletes that store entry immediately and never serves those IDs; current-URL legacy import or online discovery may repopulate.
+- Ordinary refresh reuses a store fresher than four hours; `force` (including `pi update --models`) bypasses freshness and still hits the network when allowed.
 - Fetches the primary alias catalog and optional supplemental reasoning metadata concurrently with independent timeouts composed with Pi's abort signal. Supplemental timeout/abort/failure is silent and never blocks primary success.
 - Parent cancellation publishes no partial catalog and writes no store entry.
 - Primary discovery failures reject through Pi (no `console.warn`, no configured URL/key in error text).
