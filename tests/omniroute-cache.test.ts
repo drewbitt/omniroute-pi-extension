@@ -56,7 +56,7 @@ interface FixtureServer {
   waitForResponses(target: number, message: string, timeoutMs?: number): Promise<void>;
   waitForSupplementalRequests(target: number, message: string, timeoutMs?: number): Promise<void>;
   releaseModelResponses(): void;
-  setPrimaryStatus(status: number, body?: string): void;
+  setPrimaryStatus(status: number, body?: string, statusText?: string): void;
   setPrimaryHold(hold: boolean): void;
   setSupplementalHold(hold: boolean): void;
   setSupplementalDelayMs(ms: number): void;
@@ -146,6 +146,7 @@ async function createFixtureServer(
     holdPrimary?: boolean;
     holdSupplemental?: boolean;
     primaryStatus?: number;
+    primaryStatusText?: string;
     primaryBody?: string;
     supplementalDelayMs?: number;
     supplementalBody?: string;
@@ -161,6 +162,7 @@ async function createFixtureServer(
   let holdPrimary = options.holdPrimary ?? false;
   let holdSupplemental = options.holdSupplemental ?? false;
   let primaryStatus = options.primaryStatus ?? 200;
+  let primaryStatusText = options.primaryStatusText;
   let primaryBody = options.primaryBody ?? aliasBody;
   let supplementalDelayMs = options.supplementalDelayMs ?? 0;
   const supplementalBody =
@@ -218,7 +220,11 @@ async function createFixtureServer(
       const send = () => {
         responses += 1;
         queue.notify();
-        res.writeHead(primaryStatus, { "content-type": "application/json" });
+        if (primaryStatusText !== undefined) {
+          res.writeHead(primaryStatus, primaryStatusText, { "content-type": "application/json" });
+        } else {
+          res.writeHead(primaryStatus, { "content-type": "application/json" });
+        }
         res.end(primaryBody);
       };
       if (holdPrimary) {
@@ -269,9 +275,10 @@ async function createFixtureServer(
       holdPrimary = false;
       for (const send of pendingPrimary.splice(0)) send();
     },
-    setPrimaryStatus(status, body) {
+    setPrimaryStatus(status, body, statusText) {
       primaryStatus = status;
       if (body !== undefined) primaryBody = body;
+      if (statusText !== undefined) primaryStatusText = statusText;
     },
     setPrimaryHold(hold) {
       holdPrimary = hold;
@@ -301,24 +308,30 @@ async function readFixtureModels() {
   return raw.data;
 }
 
-function createValidCacheJson(baseUrl: string, modelId = "cached-test-model") {
+function normalizedCacheModel(modelId: string, name = "Cached Test Model") {
+  return {
+    id: modelId,
+    name,
+    reasoning: false,
+    input: ["text"] as Array<"text" | "image">,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 4096,
+  };
+}
+
+function createValidCacheJson(
+  baseUrl: string,
+  modelId = "cached-test-model",
+  options?: { models?: Array<ReturnType<typeof normalizedCacheModel>>; fetchedAt?: string },
+) {
   return `${JSON.stringify(
     {
       schemaVersion: 2,
       provider: "omniroute",
       baseUrl,
-      fetchedAt: "2026-06-20T00:00:00.000Z",
-      models: [
-        {
-          id: modelId,
-          name: "Cached Test Model",
-          reasoning: false,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 128000,
-          maxTokens: 4096,
-        },
-      ],
+      fetchedAt: options?.fetchedAt ?? "2026-06-20T00:00:00.000Z",
+      models: options?.models ?? [normalizedCacheModel(modelId)],
     },
     null,
     2,
@@ -652,7 +665,7 @@ describe("OmniRoute native refreshModels provider", () => {
         }),
         (error: unknown) => {
           assert.ok(error instanceof Error);
-          assert.match(error.message, /Model discovery failed: 401/);
+          assert.match(error.message, /Model discovery failed with HTTP 401/);
           assert.doesNotMatch(error.message, new RegExp(secretKey));
           assert.doesNotMatch(error.message, new RegExp(secretHost));
           assert.doesNotMatch(error.message, /OMNIROUTE_API_KEY|Authorization|Bearer /i);
@@ -663,6 +676,81 @@ describe("OmniRoute native refreshModels provider", () => {
 
     assert.equal(warns.length, 0, "discovery failures must not console.warn");
     assert.equal(memory.writes.length, 0);
+  });
+
+  it("omits adversarial HTTP statusText from primary discovery errors", async () => {
+    const secretKey = "status-text-secret-key";
+    const secretHost = "status-text-host.example.invalid";
+    const adversarialStatusText = `Unauthorized for ${secretKey} via http://${secretHost}/v1 key=${secretKey}`;
+    const server = await createFixtureServer({
+      primaryStatus: 503,
+      primaryStatusText: adversarialStatusText,
+      primaryBody: JSON.stringify({ error: `body must stay hidden ${secretKey}` }),
+    });
+    servers.push(server);
+    process.env.OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS = "2000";
+    const harness = await boot(server.baseUrl, secretKey);
+    const registration = provider(harness);
+    const memory = createMemoryStore();
+
+    await assert.rejects(
+      registration.config.refreshModels!({
+        store: memory.store,
+        allowNetwork: true,
+        force: true,
+        credential: { type: "api_key", key: secretKey },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, "Model discovery failed with HTTP 503");
+        assert.doesNotMatch(error.message, new RegExp(secretKey));
+        assert.doesNotMatch(error.message, new RegExp(secretHost));
+        assert.doesNotMatch(error.message, /Unauthorized|body must stay hidden|Bearer /i);
+        assert.doesNotMatch(error.message, new RegExp(server.baseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        return true;
+      },
+    );
+    assert.equal(memory.writes.length, 0);
+  });
+
+  it("keeps a valid chat row when a non-chat duplicate shares the same id", async () => {
+    const server = await createFixtureServer({
+      primaryBody: JSON.stringify({
+        data: [
+          {
+            id: "codex/gpt-5.5",
+            name: "GPT 5.5",
+            type: "chat",
+            input_modalities: ["text"],
+            output_modalities: ["text"],
+            context_length: 8192,
+            max_output_tokens: 1024,
+          },
+          {
+            id: "codex/gpt-5.5",
+            name: "GPT 5.5 Image",
+            type: "image",
+            input_modalities: ["text"],
+            output_modalities: ["image"],
+            context_length: 8192,
+            max_output_tokens: 1024,
+          },
+        ],
+      }),
+      supplementalBody: JSON.stringify({ data: [] }),
+    });
+    servers.push(server);
+    process.env.OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS = "5000";
+    const harness = await boot(server.baseUrl);
+    const registration = provider(harness);
+    const memory = createMemoryStore();
+    const models = await registration.config.refreshModels!({
+      store: memory.store,
+      allowNetwork: true,
+      force: true,
+      credential: { type: "api_key", key: "test-key" },
+    });
+    assert.deepEqual(modelIds(models), ["codex/gpt-5.5"]);
   });
 
   it("filters non-conversational models from the mixed OmniRoute catalog", async () => {
@@ -680,20 +768,156 @@ describe("OmniRoute native refreshModels provider", () => {
     });
     const ids = new Set(modelIds(models));
     assert.ok(!ids.has("github/text-embedding-3-large"));
-    // Typed non-chat rows poison the whole id, including untyped duplicates in the fixture.
-    for (const id of ["codex/gpt-5.5", "veoaifree-web/veo", "veo-free/veo", "veoaifree-web/seedance", "veo-free/seedance"]) {
-      assert.ok(!ids.has(id), `should exclude non-chat id ${id}`);
-    }
+    // Valid chat row must survive when a typed image row reuses the same id.
+    assert.ok(ids.has("codex/gpt-5.5"), "chat duplicate of image id must remain");
+    // Typed non-chat rows are excluded row-by-row; untyped peers without modalities may remain.
     const fixture = await readFixtureModels();
     for (const model of fixture) {
       if (model.type === "embedding" || model.type === "image" || model.type === "video" || model.type === "audio") {
-        assert.ok(!ids.has(String(model.id)), `should exclude ${model.id}`);
+        // Only assert that the typed non-chat *row* cannot be the sole surviving reason to keep id
+        // when no conversational peer exists. Presence is allowed only via a separate chat row.
+        const hasChatPeer = fixture.some(
+          (peer) =>
+            peer.id === model.id &&
+            peer !== model &&
+            (peer.type === undefined || peer.type === "chat") &&
+            (!Array.isArray(peer.output_modalities) || peer.output_modalities.includes("text")),
+        );
+        if (!hasChatPeer) {
+          assert.ok(!ids.has(String(model.id)), `should exclude non-chat-only id ${model.id}`);
+        }
       }
-      if (Array.isArray(model.output_modalities) && !model.output_modalities.includes("text")) {
-        assert.ok(!ids.has(String(model.id)), `should exclude non-text output ${model.id}`);
+      if (
+        Array.isArray(model.output_modalities) &&
+        !model.output_modalities.includes("text") &&
+        model.type !== "image" // image handled via peer logic above
+      ) {
+        const hasTextPeer = fixture.some(
+          (peer) =>
+            peer.id === model.id &&
+            Array.isArray(peer.output_modalities) &&
+            peer.output_modalities.includes("text"),
+        );
+        if (!hasTextPeer) {
+          assert.ok(!ids.has(String(model.id)), `should exclude non-text output ${model.id}`);
+        }
       }
     }
     assert.ok(ids.size > 50, "still keeps conversational text models");
+  });
+
+  it("legacy import drops obvious non-chat normalized ids without inventing a fresh timestamp", async () => {
+    const server = await createFixtureServer({
+      primaryBody: JSON.stringify({
+        data: [
+          {
+            id: "network-chat",
+            type: "chat",
+            output_modalities: ["text"],
+            input_modalities: ["text"],
+            context_length: 8192,
+            max_output_tokens: 1024,
+          },
+        ],
+      }),
+      supplementalBody: JSON.stringify({ data: [] }),
+    });
+    servers.push(server);
+    const cachePath = join(tempDir, "legacy-mixed-cache.json");
+    const fetchedAt = new Date().toISOString();
+    await writeFile(
+      cachePath,
+      createValidCacheJson(server.baseUrl, "legacy-chat", {
+        fetchedAt,
+        models: [
+          normalizedCacheModel("legacy-chat", "legacy-chat"),
+          normalizedCacheModel("embedding/obvious", "embedding/obvious"),
+          {
+            ...normalizedCacheModel("image/obvious", "image/obvious"),
+            input: ["text", "image"],
+          },
+          normalizedCacheModel("video/obvious", "video/obvious"),
+          normalizedCacheModel("audio/obvious", "audio/obvious"),
+          // Must not be dropped by generic keyword false positives.
+          normalizedCacheModel("provider-image-studio/chat-helper", "Vision Chat Helper"),
+        ],
+      }),
+    );
+    process.env.OMNIROUTE_BASE_URL = server.baseUrl;
+    process.env.OMNIROUTE_API_KEY = "test-key";
+    process.env.OMNIROUTE_MODEL_CACHE_PATH = cachePath;
+    process.env.PI_CODING_AGENT_DIR = tempDir;
+
+    const harness = createHarness();
+    await extension(harness.api);
+    const registration = provider(harness);
+    const memory = createMemoryStore();
+    const models = await registration.config.refreshModels!({
+      store: memory.store,
+      allowNetwork: true,
+      force: false,
+      credential: { type: "api_key", key: "test-key" },
+    });
+
+    assert.deepEqual(modelIds(models).sort(), ["legacy-chat", "provider-image-studio/chat-helper"].sort());
+    assert.equal(server.requests, 0, "fresh-enough legacy fetchedAt must not force network");
+    assert.equal(memory.writes.length, 1);
+    const written = memory.writes[0]!;
+    assert.deepEqual(
+      (written.models as Array<{ id: string }>).map((model) => model.id).sort(),
+      ["legacy-chat", "provider-image-studio/chat-helper"].sort(),
+    );
+    const expectedCheckedAt = Date.parse(fetchedAt);
+    assert.equal(written.checkedAt, expectedCheckedAt);
+    assert.ok(Date.now() - (written.checkedAt ?? 0) < 5_000);
+  });
+
+  it("stale legacy fetchedAt remains offline-cleaned but allows ordinary revalidation", async () => {
+    const server = await createFixtureServer({
+      primaryBody: JSON.stringify({
+        data: [
+          {
+            id: "network-chat",
+            type: "chat",
+            output_modalities: ["text"],
+            input_modalities: ["text"],
+            context_length: 8192,
+            max_output_tokens: 1024,
+          },
+        ],
+      }),
+      supplementalBody: JSON.stringify({ data: [] }),
+    });
+    servers.push(server);
+    const cachePath = join(tempDir, "legacy-stale-cache.json");
+    await writeFile(
+      cachePath,
+      createValidCacheJson(server.baseUrl, "legacy-chat", {
+        fetchedAt: "2020-01-01T00:00:00.000Z",
+        models: [
+          normalizedCacheModel("legacy-chat", "legacy-chat"),
+          normalizedCacheModel("embedding/obvious", "embedding/obvious"),
+        ],
+      }),
+    );
+    process.env.OMNIROUTE_BASE_URL = server.baseUrl;
+    process.env.OMNIROUTE_API_KEY = "test-key";
+    process.env.OMNIROUTE_MODEL_CACHE_PATH = cachePath;
+
+    const harness = createHarness();
+    await extension(harness.api);
+    const registration = provider(harness);
+    const memory = createMemoryStore();
+    const models = await registration.config.refreshModels!({
+      store: memory.store,
+      allowNetwork: true,
+      force: false,
+      credential: { type: "api_key", key: "test-key" },
+    });
+
+    assert.deepEqual(modelIds(models), ["network-chat"]);
+    assert.equal(server.requests, 1);
+    assert.ok(memory.writes.length >= 1);
   });
 
   it("folds verified reasoning variants and hides synthetic Codex ultra aliases", async () => {

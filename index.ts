@@ -291,25 +291,12 @@ function resolveVerifiedVariantBase(
 }
 
 function normalizeModels(rawModels: OmnirouteModel[], effortIndex: SupplementalEffortIndex): ProviderModel[] {
-  // If any catalog entry for an id is a known non-chat type, drop the whole id.
-  // This covers OmniRoute catalogs that emit both typed non-chat rows and untyped duplicates.
-  const nonChatIds = new Set<string>();
-  for (const model of rawModels) {
-    if (!model?.id) continue;
-    const type = typeof model.type === "string" ? model.type.trim().toLowerCase() : "";
-    if (type && NON_CHAT_TYPES.has(type)) nonChatIds.add(model.id);
-    if (model.output_modalities && model.output_modalities.length > 0 && !model.output_modalities.includes("text")) {
-      nonChatIds.add(model.id);
-    }
-  }
-
+  // Filter non-chat rows individually, then dedupe among remaining conversational rows.
+  // A valid text/chat row must survive when a separate non-chat row reuses the same id.
   const deduped = new Map<string, OmnirouteModel>();
   for (const model of rawModels.filter(
     (candidate) =>
-      candidate?.id &&
-      !nonChatIds.has(candidate.id) &&
-      isConversationalTextModel(candidate) &&
-      !isSyntheticCodexUltraAlias(candidate),
+      candidate?.id && isConversationalTextModel(candidate) && !isSyntheticCodexUltraAlias(candidate),
   )) {
     const current = deduped.get(model.id);
     deduped.set(model.id, current ? betterModel(current, model) : model);
@@ -499,29 +486,64 @@ function providerModelsFromStore(models: readonly unknown[] | undefined): Provid
   return result;
 }
 
-function readLegacyCachedModels(baseUrl: string): ProviderModel[] {
+function identifierSegments(value: string): string[] {
+  return value
+    .trim()
+    .toLowerCase()
+    .split(/[/:]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Conservative cleanup for schema-2 normalized legacy entries that lack raw type/modality.
+ * Only drop strong unambiguous identifiers (embedding/image/video/audio path segments or
+ * embedding model names). Do not treat generic provider words as non-chat signals.
+ */
+function isObviousNonChatNormalizedModel(model: ProviderModel): boolean {
+  for (const value of [model.id, model.name]) {
+    if (typeof value !== "string" || !value.trim()) continue;
+    const segments = identifierSegments(value);
+    if (segments.length === 0) continue;
+    const first = segments[0]!;
+    const last = segments[segments.length - 1]!;
+    if (NON_CHAT_TYPES.has(first) || NON_CHAT_TYPES.has(last)) return true;
+    // text-embedding-3-large, embedding-ada-002, foo-embedding-bar
+    if (/(^|[-_.])embedding([-_.]|$)/.test(last)) return true;
+  }
+  return false;
+}
+
+function parseLegacyFetchedAt(value: string): number | undefined {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+function readLegacyCachedModels(baseUrl: string): { models: ProviderModel[]; checkedAt?: number } {
   try {
     const raw = readFileSync(getLegacyCachePath(baseUrl), "utf8");
     const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) return [];
-    if (parsed.schemaVersion !== CACHE_SCHEMA_VERSION) return [];
-    if (parsed.provider !== PROVIDER) return [];
-    if (typeof parsed.baseUrl !== "string" || parsed.baseUrl.replace(/\/+$/, "") !== baseUrl) return [];
-    if (typeof parsed.fetchedAt !== "string") return [];
-    if (!Array.isArray(parsed.models)) return [];
+    if (!isRecord(parsed)) return { models: [] };
+    if (parsed.schemaVersion !== CACHE_SCHEMA_VERSION) return { models: [] };
+    if (parsed.provider !== PROVIDER) return { models: [] };
+    if (typeof parsed.baseUrl !== "string" || parsed.baseUrl.replace(/\/+$/, "") !== baseUrl) return { models: [] };
+    if (typeof parsed.fetchedAt !== "string") return { models: [] };
+    if (!Array.isArray(parsed.models)) return { models: [] };
 
     const models: ProviderModel[] = [];
     for (const entry of parsed.models) {
       if (!isProviderModel(entry)) continue;
       if (isSyntheticCodexUltraAlias({ id: entry.id, root: entry.name })) continue;
+      if (isObviousNonChatNormalizedModel(entry)) continue;
       models.push({
         ...entry,
         thinkingLevelMap: entry.thinkingLevelMap ? sanitizeThinkingLevelMap(entry.thinkingLevelMap) : undefined,
       });
     }
-    return models;
+    // Preserve legacy freshness; never invent Date.now() for imported catalogs.
+    return { models, checkedAt: parseLegacyFetchedAt(parsed.fetchedAt) };
   } catch {
-    return [];
+    return { models: [] };
   }
 }
 
@@ -555,9 +577,9 @@ function throwIfAborted(signal: AbortSignal | undefined) {
   }
 }
 
-function primaryDiscoveryError(status: number, statusText: string) {
-  // Never include configured URL, API key, or response body (may echo secrets).
-  return new Error(`Model discovery failed: ${status} ${statusText}`.trim());
+function primaryDiscoveryError(status: number) {
+  // Never include statusText, configured URL, API key, or response body (may echo secrets).
+  return new Error(`Model discovery failed with HTTP ${status}`);
 }
 
 async function fetchJsonWithTimeout<T>(
@@ -571,7 +593,7 @@ async function fetchJsonWithTimeout<T>(
     const response = await fetch(url, { headers, signal });
     throwIfAborted(parent);
     if (!response.ok) {
-      throw primaryDiscoveryError(response.status, response.statusText);
+      throw primaryDiscoveryError(response.status);
     }
     return (await response.json()) as T;
   } finally {
@@ -694,13 +716,14 @@ async function refreshModels(baseUrl: string, context: RefreshModelsContext): Pr
   // One-time legacy catalog import into Pi's provider-scoped store (file kept for downgrade).
   if (models.length === 0) {
     const legacy = readLegacyCachedModels(baseUrl);
-    if (legacy.length > 0) {
-      models = legacy;
-      checkedAt = Date.now();
+    if (legacy.models.length > 0) {
+      models = legacy.models;
+      // Prefer authentic legacy timestamp so stale catalogs revalidate immediately online.
+      checkedAt = legacy.checkedAt;
       throwIfAborted(context.signal);
       await context.store.write({
         models: models.map((model) => storeModelFromConfig(toProviderModelConfig(model), baseUrl)),
-        checkedAt,
+        ...(checkedAt !== undefined ? { checkedAt } : {}),
       });
       stored = { models, checkedAt };
     }
