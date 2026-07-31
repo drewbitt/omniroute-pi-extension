@@ -582,6 +582,15 @@ function primaryDiscoveryError(status: number) {
   return new Error(`Model discovery failed with HTTP ${status}`);
 }
 
+function primaryDiscoveryInvalidBodyError(status: number) {
+  // Fixed category only — never exception.message, body text, statusText, URL, headers, or credentials.
+  return new Error(`Model discovery failed with HTTP ${status}: invalid response body`);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 async function fetchJsonWithTimeout<T>(
   url: string,
   headers: Record<string, string>,
@@ -595,7 +604,19 @@ async function fetchJsonWithTimeout<T>(
     if (!response.ok) {
       throw primaryDiscoveryError(response.status);
     }
-    return (await response.json()) as T;
+    try {
+      return (await response.json()) as T;
+    } catch (error) {
+      // Abort during body read must remain AbortError (parent or timeout), not a discovery message.
+      if (isAbortError(error)) throw error;
+      throwIfAborted(parent);
+      if (signal.aborted) {
+        const abortError = new Error("The operation was aborted");
+        abortError.name = "AbortError";
+        throw abortError;
+      }
+      throw primaryDiscoveryInvalidBodyError(response.status);
+    }
   } finally {
     dispose();
   }

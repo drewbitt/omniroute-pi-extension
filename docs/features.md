@@ -25,7 +25,7 @@ This document records the runtime features and invariants implemented by the Omn
 - Each request uses an independent timeout (`OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS`, default 15s) composed with Pi's parent `context.signal`.
 - Supplemental timeout/abort/failure is silent: it never delays, invalidates, or warns after primary success. Metadata is used only if already settled when primary is ready; otherwise the request is cancelled/ignored and normalization proceeds from alias suffixes alone.
 - Parent abort before a successful write yields no partial return and no store write.
-- Primary HTTP failures reject with a sanitized `Model discovery failed: <status> <statusText>` message (no URL, API key, Authorization header, or response body). The extension does not `console.warn` discovery failures.
+- Primary HTTP failures and successful responses with undecodable bodies reject with a sanitized fixed-category message such as `Model discovery failed with HTTP <status>` or `Model discovery failed with HTTP <status>: invalid response body` (no statusText, URL, API key, Authorization header, exception message, or response body). The extension does not `console.warn` discovery failures.
 - Empty discovery results leave any previously stored catalog in place.
 
 ## Conversational model boundary
@@ -33,7 +33,7 @@ This document records the runtime features and invariants implemented by the Omn
 - Pi separates chat `Model` catalogs from image-generation `ImagesModel` catalogs.
 - OmniRoute's mixed catalog is filtered to conversational text models:
   - exclude known non-chat types `embedding`, `image`, `video`, `audio`;
-  - if any catalog row for an id is non-chat (typed or non-text output), drop that entire id (including untyped duplicates);
+  - filter non-chat rows individually before deduplication so a valid conversational row survives when a non-chat duplicate reuses the same id;
   - require text output when `output_modalities` is declared.
 - Synthetic Codex ultra aliases remain hidden; verified reasoning-effort suffix variants still fold into the base model.
 

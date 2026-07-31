@@ -713,6 +713,48 @@ describe("OmniRoute native refreshModels provider", () => {
     assert.equal(memory.writes.length, 0);
   });
 
+  it("sanitizes HTTP 200 malformed JSON that echoes credential and endpoint markers", async () => {
+    const secretKey = "malformed-json-secret-key-9f3a";
+    const endpointMarker = "malformed-json-endpoint-marker.example.invalid";
+    const malformedBody =
+      `{not-json leaked key=${secretKey} endpoint=http://${endpointMarker}/v1/models?prefix=alias Authorization=Bearer ${secretKey}`;
+    const server = await createFixtureServer({
+      primaryStatus: 200,
+      primaryBody: malformedBody,
+    });
+    servers.push(server);
+    process.env.OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS = "2000";
+    const harness = await boot(server.baseUrl, secretKey);
+    const registration = provider(harness);
+    const memory = createMemoryStore();
+
+    const { warns } = await captureConsoleWarns(async () => {
+      await assert.rejects(
+        registration.config.refreshModels!({
+          store: memory.store,
+          allowNetwork: true,
+          force: true,
+          credential: { type: "api_key", key: secretKey },
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.message, "Model discovery failed with HTTP 200: invalid response body");
+          assert.doesNotMatch(error.message, new RegExp(secretKey));
+          assert.doesNotMatch(error.message, new RegExp(endpointMarker));
+          assert.doesNotMatch(error.message, /not-json|Authorization|Bearer |leaked key|SyntaxError|Unexpected/i);
+          assert.doesNotMatch(
+            error.message,
+            new RegExp(server.baseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+          );
+          return true;
+        },
+      );
+    });
+
+    assert.equal(warns.length, 0, "discovery failures must not console.warn");
+    assert.equal(memory.writes.length, 0);
+  });
+
   it("keeps a valid chat row when a non-chat duplicate shares the same id", async () => {
     const server = await createFixtureServer({
       primaryBody: JSON.stringify({
