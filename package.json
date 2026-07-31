@@ -4,7 +4,11 @@
   "description": "OmniRoute custom provider extension for Pi.",
   "private": true,
   "license": "MIT",
-  "keywords": ["pi-package", "pi-extension", "omniroute"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "omniroute"
+  ],
   "type": "module",
   "scripts": {
     "check:syntax": "node --check index.ts && node --check tests/*.test.ts",
@@ -15,9 +19,11 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.6"
+    "@earendil-works/pi-coding-agent": "^0.83.0"
   }
 }

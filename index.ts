@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER = "omniroute";
 const PROVIDER_DISPLAY_NAME = "OmniRoute";
@@ -12,9 +11,11 @@ const AUTH_HEADER_PREFIX = "Bearer ";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 16384;
 const DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
-const MAX_ERROR_BODY_LENGTH = 500;
 const CACHE_SCHEMA_VERSION = 2;
 const CACHE_PATH_ENV = "OMNIROUTE_MODEL_CACHE_PATH";
+/** Matches Pi remote-catalog freshness (4 hours). */
+const CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const NON_CHAT_TYPES = new Set(["embedding", "image", "video", "audio"]);
 
 interface OmnirouteModel {
   id: string;
@@ -76,11 +77,22 @@ interface ProviderModel {
 }
 
 interface ModelCache {
-  schemaVersion: typeof CACHE_SCHEMA_VERSION;
-  provider: typeof PROVIDER;
+  schemaVersion: number;
+  provider: string;
   baseUrl: string;
   fetchedAt: string;
   models: ProviderModel[];
+}
+
+interface RefreshModelsContext {
+  credential?: { type?: string; key?: string };
+  store: {
+    read(): Promise<{ models?: readonly unknown[]; checkedAt?: number } | undefined>;
+    write(entry: { models: readonly unknown[]; checkedAt?: number }): Promise<void>;
+  };
+  allowNetwork: boolean;
+  force?: boolean;
+  signal?: AbortSignal;
 }
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -91,10 +103,13 @@ const SYNTHETIC_CODEX_ULTRA_ROOTS = new Set(["gpt-5.6-sol-ultra", "gpt-5.6-terra
 const CODEX_MODEL_PREFIXES = new Set(["cx", "codex"]);
 const DEEPSEEK_THINKING_FAMILY = "deepseek-thinking";
 
-function isTextModel(model: OmnirouteModel): boolean {
-  if (model.type === "image") return false;
-  if (!model.output_modalities || model.output_modalities.length === 0) return true;
-  return model.output_modalities.includes("text");
+function isConversationalTextModel(model: OmnirouteModel): boolean {
+  const type = typeof model.type === "string" ? model.type.trim().toLowerCase() : "";
+  if (type && NON_CHAT_TYPES.has(type)) return false;
+  if (model.output_modalities && model.output_modalities.length > 0 && !model.output_modalities.includes("text")) {
+    return false;
+  }
+  return true;
 }
 
 function betterModel(a: OmnirouteModel, b: OmnirouteModel): OmnirouteModel {
@@ -144,59 +159,53 @@ function parseReasoningVariant(id: string): { base: string; effort?: ReasoningEf
 
 function parseReasoningEfforts(values: unknown): ReasoningEffort[] {
   if (!Array.isArray(values)) return [];
-
   const efforts: ReasoningEffort[] = [];
-
   for (const value of values) {
-    if (typeof value !== "string") continue;
-
-    const normalized = value.trim().toLowerCase().replace(/[_\s-]+/g, "");
-    const effort = normalized === "off" ? "none" : (normalized as ReasoningEffort);
-    if (!REASONING_EFFORT_SET.has(effort)) continue;
-
-    if (!efforts.includes(effort)) {
-      efforts.push(effort);
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (REASONING_EFFORT_SET.has(normalized)) efforts.push(normalized as ReasoningEffort);
+      continue;
+    }
+    if (value && typeof value === "object" && "effort" in value) {
+      const effort = (value as { effort?: unknown }).effort;
+      if (typeof effort === "string") {
+        const normalized = effort.trim().toLowerCase();
+        if (REASONING_EFFORT_SET.has(normalized)) efforts.push(normalized as ReasoningEffort);
+      }
     }
   }
-
   return efforts;
 }
 
 function getEffortsFromReasoningMetadata(model: ReasoningMetadataModel): ReasoningEffort[] {
-  for (const candidate of [
-    model.supportsReasoningEffort,
-    model.supports_reasoning_effort,
-    model.supportedReasoningEfforts,
-    model.configSchema?.properties?.reasoningEffort?.enum,
-    model.configurationSchema?.properties?.reasoningEffort?.enum,
-  ]) {
-    const efforts = parseReasoningEfforts(candidate);
-    if (efforts.length > 0) return efforts;
-  }
+  const fromSupported = parseReasoningEfforts(
+    model.supportedReasoningEfforts ?? model.supportsReasoningEffort ?? model.supports_reasoning_effort,
+  );
+  if (fromSupported.length > 0) return fromSupported;
 
-  return [];
+  const schema = model.configSchema ?? model.configurationSchema;
+  return parseReasoningEfforts(schema?.properties?.reasoningEffort?.enum);
 }
 
 function normalizeModelToken(value?: string | null) {
-  return value?.trim().toLowerCase();
+  return value?.trim().toLowerCase() || undefined;
 }
 
 function addModelKey(keys: Set<string>, value?: string | null) {
-  const key = normalizeModelToken(value);
-  if (key) keys.add(key);
+  const normalized = normalizeModelToken(value);
+  if (normalized) keys.add(normalized);
 }
 
 function strictModelKeys(model: { id?: string; root?: string; parent?: string | null; owned_by?: string }) {
   const keys = new Set<string>();
   addModelKey(keys, model.id);
+  addModelKey(keys, model.root);
   addModelKey(keys, model.parent);
-  if (model.owned_by && model.root) addModelKey(keys, `${model.owned_by}/${model.root}`);
-  return [...keys];
+  return keys;
 }
 
 function rootModelKey(model: { id?: string; root?: string }) {
-  const root = model.root ?? model.id?.split("/").pop();
-  return normalizeModelToken(root);
+  return normalizeModelToken(model.root) ?? normalizeModelToken(model.id);
 }
 
 function isSyntheticCodexUltraAlias(model: { id: string; root?: string; owned_by?: string }) {
@@ -282,8 +291,26 @@ function resolveVerifiedVariantBase(
 }
 
 function normalizeModels(rawModels: OmnirouteModel[], effortIndex: SupplementalEffortIndex): ProviderModel[] {
+  // If any catalog entry for an id is a known non-chat type, drop the whole id.
+  // This covers OmniRoute catalogs that emit both typed non-chat rows and untyped duplicates.
+  const nonChatIds = new Set<string>();
+  for (const model of rawModels) {
+    if (!model?.id) continue;
+    const type = typeof model.type === "string" ? model.type.trim().toLowerCase() : "";
+    if (type && NON_CHAT_TYPES.has(type)) nonChatIds.add(model.id);
+    if (model.output_modalities && model.output_modalities.length > 0 && !model.output_modalities.includes("text")) {
+      nonChatIds.add(model.id);
+    }
+  }
+
   const deduped = new Map<string, OmnirouteModel>();
-  for (const model of rawModels.filter((candidate) => candidate?.id && isTextModel(candidate) && !isSyntheticCodexUltraAlias(candidate))) {
+  for (const model of rawModels.filter(
+    (candidate) =>
+      candidate?.id &&
+      !nonChatIds.has(candidate.id) &&
+      isConversationalTextModel(candidate) &&
+      !isSyntheticCodexUltraAlias(candidate),
+  )) {
     const current = deduped.get(model.id);
     deduped.set(model.id, current ? betterModel(current, model) : model);
   }
@@ -355,7 +382,7 @@ function getDiscoveryTimeoutMs() {
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS;
 }
 
-function getDiscoveryApiKey() {
+function getEnvApiKey() {
   return cleanConfigValue(process.env.OMNIROUTE_API_KEY);
 }
 
@@ -363,55 +390,12 @@ function getBaseUrl() {
   return cleanConfigValue(process.env.OMNIROUTE_BASE_URL)?.replace(/\/+$/, "");
 }
 
-function getCachePath(baseUrl: string) {
+function getLegacyCachePath(baseUrl: string) {
   const configuredPath = cleanConfigValue(process.env[CACHE_PATH_ENV]);
   if (configuredPath) return configuredPath;
 
   const cacheKey = createHash("sha256").update(baseUrl).digest("hex").slice(0, 16);
   return join(getAgentDir(), "omniroute", `models-${cacheKey}.json`);
-}
-
-function getProcessArgs() {
-  return process.argv.slice(2);
-}
-
-function hasHelpArg(args = getProcessArgs()) {
-  return args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v");
-}
-
-function hasListModelsArg(args = getProcessArgs()) {
-  return args.some((arg) => arg === "--list-models" || arg.startsWith("--list-models="));
-}
-
-function getModeArg(args = getProcessArgs()) {
-  const modeIndex = args.indexOf("--mode");
-  return modeIndex >= 0 ? args[modeIndex + 1] : args.find((arg) => arg.startsWith("--mode="))?.slice("--mode=".length);
-}
-
-function isPrintArg(args = getProcessArgs()) {
-  return args.some((arg) => arg === "--print" || arg === "-p");
-}
-
-function isInteractiveTuiStartup(args = getProcessArgs()) {
-  const mode = getModeArg(args);
-  if (mode === "rpc" || mode === "json" || isPrintArg(args)) return false;
-  return process.stdin.isTTY === true && process.stdout.isTTY === true;
-}
-
-function isTruthyEnvFlag(value: string | undefined) {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
-}
-
-function isOfflineMode() {
-  return isTruthyEnvFlag(process.env.PI_OFFLINE);
-}
-
-function shouldRefreshAfterCachedBootstrap(args: string[]) {
-  if (isOfflineMode()) return false;
-
-  return hasListModelsArg(args) || isInteractiveTuiStartup(args);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -424,7 +408,9 @@ function isPositiveNumber(value: unknown): value is number {
 
 function isCost(value: unknown): value is ProviderModel["cost"] {
   if (!isRecord(value)) return false;
-  return ["input", "output", "cacheRead", "cacheWrite"].every((key) => typeof value[key] === "number" && Number.isFinite(value[key]));
+  return ["input", "output", "cacheRead", "cacheWrite"].every(
+    (key) => typeof value[key] === "number" && Number.isFinite(value[key]),
+  );
 }
 
 function isInputList(value: unknown): value is ProviderInput[] {
@@ -455,227 +441,315 @@ function isProviderModel(value: unknown): value is ProviderModel {
   return true;
 }
 
-function parseModelCache(value: unknown, baseUrl: string): ModelCache | undefined {
-  if (!isRecord(value)) return undefined;
-  if (value.schemaVersion !== CACHE_SCHEMA_VERSION) return undefined;
-  if (value.provider !== PROVIDER) return undefined;
-  if (value.baseUrl !== baseUrl) return undefined;
-  if (typeof value.fetchedAt !== "string" || value.fetchedAt.length === 0) return undefined;
-  if (!Array.isArray(value.models) || value.models.length === 0) return undefined;
-  if (!value.models.every(isProviderModel)) return undefined;
-
-  return value as unknown as ModelCache;
+function sanitizeThinkingLevelMap(map: Record<ThinkingLevel, string | null> | undefined) {
+  if (!map) return undefined;
+  const sanitized = { ...map } as Record<ThinkingLevel, string | null>;
+  for (const level of THINKING_LEVELS) {
+    if (!(level in sanitized)) sanitized[level] = null;
+  }
+  return sanitized;
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+function toProviderModelConfig(model: ProviderModel): ProviderModelConfig {
+  return {
+    id: model.id,
+    name: model.name,
+    reasoning: model.reasoning,
+    ...(model.thinkingLevelMap ? { thinkingLevelMap: sanitizeThinkingLevelMap(model.thinkingLevelMap) } : {}),
+    input: model.input,
+    cost: model.cost,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  };
 }
 
-function errorCode(error: unknown) {
-  return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+function storeModelFromConfig(model: ProviderModelConfig, baseUrl: string) {
+  return {
+    ...model,
+    provider: PROVIDER,
+    api: "openai-responses" as const,
+    baseUrl,
+  };
 }
 
-function readCachedModels(baseUrl: string): ProviderModel[] {
-  const cachePath = getCachePath(baseUrl);
+function providerModelsFromStore(models: readonly unknown[] | undefined): ProviderModel[] {
+  if (!Array.isArray(models)) return [];
+  const result: ProviderModel[] = [];
+  for (const entry of models) {
+    if (!isRecord(entry)) continue;
+    const candidate = {
+      id: entry.id,
+      name: entry.name,
+      reasoning: entry.reasoning,
+      thinkingLevelMap: entry.thinkingLevelMap,
+      input: entry.input,
+      cost: entry.cost,
+      contextWindow: entry.contextWindow,
+      maxTokens: entry.maxTokens,
+    };
+    if (!isProviderModel(candidate)) continue;
+    if (isSyntheticCodexUltraAlias({ id: candidate.id, root: candidate.name })) continue;
+    result.push({
+      ...candidate,
+      thinkingLevelMap: candidate.thinkingLevelMap
+        ? sanitizeThinkingLevelMap(candidate.thinkingLevelMap)
+        : undefined,
+    });
+  }
+  return result;
+}
 
+function readLegacyCachedModels(baseUrl: string): ProviderModel[] {
   try {
-    const cache = parseModelCache(JSON.parse(readFileSync(cachePath, "utf8")), baseUrl);
-    if (!cache) {
-      console.warn(`[${PROVIDER}] Ignoring invalid model cache at ${cachePath}.`);
-      return [];
-    }
+    const raw = readFileSync(getLegacyCachePath(baseUrl), "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return [];
+    if (parsed.schemaVersion !== CACHE_SCHEMA_VERSION) return [];
+    if (parsed.provider !== PROVIDER) return [];
+    if (typeof parsed.baseUrl !== "string" || parsed.baseUrl.replace(/\/+$/, "") !== baseUrl) return [];
+    if (typeof parsed.fetchedAt !== "string") return [];
+    if (!Array.isArray(parsed.models)) return [];
 
-    return cache.models.filter((model) => !isSyntheticCodexUltraAlias(model));
-  } catch (error) {
-    if (errorCode(error) !== "ENOENT") {
-      console.warn(`[${PROVIDER}] Could not read model cache at ${cachePath}: ${errorMessage(error)}`);
+    const models: ProviderModel[] = [];
+    for (const entry of parsed.models) {
+      if (!isProviderModel(entry)) continue;
+      if (isSyntheticCodexUltraAlias({ id: entry.id, root: entry.name })) continue;
+      models.push({
+        ...entry,
+        thinkingLevelMap: entry.thinkingLevelMap ? sanitizeThinkingLevelMap(entry.thinkingLevelMap) : undefined,
+      });
     }
-
+    return models;
+  } catch {
     return [];
   }
 }
 
-async function writeModelCache(baseUrl: string, models: ProviderModel[]) {
-  const cachePath = getCachePath(baseUrl);
-  const cache: ModelCache = {
-    schemaVersion: CACHE_SCHEMA_VERSION,
-    provider: PROVIDER,
-    baseUrl,
-    fetchedAt: new Date().toISOString(),
-    models,
-  };
-
-  await mkdir(dirname(cachePath), { recursive: true, mode: 0o700 });
-
-  const tempPath = `${cachePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(cache, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  await rename(tempPath, cachePath);
+function resolveApiKey(context: RefreshModelsContext): string | undefined {
+  if (context.credential?.type === "api_key" && typeof context.credential.key === "string") {
+    return cleanConfigValue(context.credential.key);
+  }
+  return getEnvApiKey();
 }
 
-function registerOmnirouteProvider(pi: ExtensionAPI, baseUrl: string, models: ProviderModel[]) {
-  if (models.length === 0) return;
+function createTimeoutSignal(parent: AbortSignal | undefined, timeoutMs: number) {
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(parent?.reason);
+  if (parent) {
+    if (parent.aborted) controller.abort(parent.reason);
+    else parent.addEventListener("abort", onParentAbort, { once: true });
+  }
+  const timer = setTimeout(() => controller.abort(new Error("timeout")), timeoutMs);
+  const dispose = () => {
+    clearTimeout(timer);
+    if (parent) parent.removeEventListener("abort", onParentAbort);
+  };
+  return { signal: controller.signal, controller, dispose };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined) {
+  if (signal?.aborted) {
+    const error = new Error("The operation was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
+}
+
+function primaryDiscoveryError(status: number, statusText: string) {
+  // Never include configured URL, API key, or response body (may echo secrets).
+  return new Error(`Model discovery failed: ${status} ${statusText}`.trim());
+}
+
+async function fetchJsonWithTimeout<T>(
+  url: string,
+  headers: Record<string, string>,
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  const { signal, dispose } = createTimeoutSignal(parent, timeoutMs);
+  try {
+    const response = await fetch(url, { headers, signal });
+    throwIfAborted(parent);
+    if (!response.ok) {
+      throw primaryDiscoveryError(response.status, response.statusText);
+    }
+    return (await response.json()) as T;
+  } finally {
+    dispose();
+  }
+}
+
+async function fetchSupplementalEffortIndex(
+  baseUrl: string,
+  headers: Record<string, string>,
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+  controller: AbortController,
+): Promise<SupplementalEffortIndex> {
+  const onParentAbort = () => {
+    if (!controller.signal.aborted) controller.abort(parent?.reason);
+  };
+  if (parent) {
+    if (parent.aborted) controller.abort(parent.reason);
+    else parent.addEventListener("abort", onParentAbort, { once: true });
+  }
+  const timer = setTimeout(() => {
+    if (!controller.signal.aborted) controller.abort(new Error("timeout"));
+  }, timeoutMs);
+  try {
+    const response = await fetch(deriveSupplementalReasoningMetadataUrl(baseUrl), {
+      headers,
+      signal: controller.signal,
+    });
+    if (!response.ok) return buildSupplementalEffortIndex([]);
+    const payload = (await response.json()) as DataPayload<ReasoningMetadataModel>;
+    return buildSupplementalEffortIndex(Array.isArray(payload.data) ? payload.data : []);
+  } catch {
+    return buildSupplementalEffortIndex([]);
+  } finally {
+    clearTimeout(timer);
+    if (parent) parent.removeEventListener("abort", onParentAbort);
+  }
+}
+
+async function discoverAndNormalize(
+  baseUrl: string,
+  apiKey: string,
+  parent: AbortSignal | undefined,
+): Promise<ProviderModel[]> {
+  const timeoutMs = getDiscoveryTimeoutMs();
+  const headers = { Authorization: `${AUTH_HEADER_PREFIX}${apiKey}` };
+  const supplementalController = new AbortController();
+
+  // Start both requests before awaiting either, so supplemental can race independently.
+  const primaryPromise = fetchJsonWithTimeout<DataPayload<OmnirouteModel>>(
+    `${baseUrl}/models?prefix=alias`,
+    headers,
+    parent,
+    timeoutMs,
+  );
+
+  let supplementalSettled = false;
+  let supplementalIndex = buildSupplementalEffortIndex([]);
+  const supplementalPromise = fetchSupplementalEffortIndex(
+    baseUrl,
+    headers,
+    parent,
+    timeoutMs,
+    supplementalController,
+  ).then(
+    (index) => {
+      supplementalSettled = true;
+      supplementalIndex = index;
+      return index;
+    },
+    () => {
+      supplementalSettled = true;
+      supplementalIndex = buildSupplementalEffortIndex([]);
+      return supplementalIndex;
+    },
+  );
+
+  // Keep the race alive without making primary wait on it.
+  void supplementalPromise.catch(() => undefined);
+
+  let payload: DataPayload<OmnirouteModel>;
+  try {
+    payload = await primaryPromise;
+  } catch (error) {
+    if (!supplementalController.signal.aborted) supplementalController.abort();
+    throwIfAborted(parent);
+    throw error;
+  }
+
+  throwIfAborted(parent);
+
+  if (!supplementalSettled) {
+    if (!supplementalController.signal.aborted) supplementalController.abort();
+  }
+
+  // One short yield so an already-completed supplemental then() can mark settled.
+  if (!supplementalSettled) {
+    await Promise.race([supplementalPromise, Promise.resolve()]);
+  }
+
+  const effortIndex = supplementalSettled ? supplementalIndex : buildSupplementalEffortIndex([]);
+  const rawModels = Array.isArray(payload.data) ? payload.data : [];
+  return normalizeModels(rawModels, effortIndex);
+}
+
+function isFresh(checkedAt: number | undefined, force: boolean | undefined) {
+  if (force) return false;
+  if (checkedAt === undefined) return false;
+  return Date.now() - checkedAt < CATALOG_REFRESH_INTERVAL_MS;
+}
+
+async function refreshModels(baseUrl: string, context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
+  throwIfAborted(context.signal);
+
+  let stored = await context.store.read();
+  let models = providerModelsFromStore(stored?.models);
+  let checkedAt = stored?.checkedAt;
+
+  // One-time legacy catalog import into Pi's provider-scoped store (file kept for downgrade).
+  if (models.length === 0) {
+    const legacy = readLegacyCachedModels(baseUrl);
+    if (legacy.length > 0) {
+      models = legacy;
+      checkedAt = Date.now();
+      throwIfAborted(context.signal);
+      await context.store.write({
+        models: models.map((model) => storeModelFromConfig(toProviderModelConfig(model), baseUrl)),
+        checkedAt,
+      });
+      stored = { models, checkedAt };
+    }
+  }
+
+  throwIfAborted(context.signal);
+
+  if (models.length > 0 && isFresh(checkedAt, context.force)) {
+    return models.map(toProviderModelConfig);
+  }
+
+  if (!context.allowNetwork) {
+    return models.map(toProviderModelConfig);
+  }
+
+  const apiKey = resolveApiKey(context);
+  if (!apiKey) {
+    return models.map(toProviderModelConfig);
+  }
+
+  throwIfAborted(context.signal);
+
+  const discovered = await discoverAndNormalize(baseUrl, apiKey, context.signal);
+  throwIfAborted(context.signal);
+
+  if (discovered.length === 0) {
+    return models.map(toProviderModelConfig);
+  }
+
+  const nextCheckedAt = Date.now();
+  await context.store.write({
+    models: discovered.map((model) => storeModelFromConfig(toProviderModelConfig(model), baseUrl)),
+    checkedAt: nextCheckedAt,
+  });
+  return discovered.map(toProviderModelConfig);
+}
+
+export default function (pi: ExtensionAPI) {
+  const baseUrl = getBaseUrl();
+  if (!baseUrl) return;
 
   pi.registerProvider(PROVIDER, {
     name: PROVIDER_DISPLAY_NAME,
     baseUrl,
     apiKey: API_KEY_REFERENCE,
     api: "openai-responses",
-    models,
+    models: [],
+    async refreshModels(context) {
+      return refreshModels(baseUrl, context as RefreshModelsContext);
+    },
   });
-}
-
-async function responseErrorSummary(response: Response) {
-  const status = `Model discovery failed: ${response.status} ${response.statusText}`.trim();
-  const body = (await response.text()).trim();
-  if (!body) return status;
-
-  const summary = body.length > MAX_ERROR_BODY_LENGTH ? `${body.slice(0, MAX_ERROR_BODY_LENGTH)}…` : body;
-  return `${status}: ${summary}`;
-}
-
-async function discoverModels(baseUrl: string) {
-  const apiKey = getDiscoveryApiKey();
-  if (!apiKey) {
-    return [];
-  }
-
-  const headers = { Authorization: `${AUTH_HEADER_PREFIX}${apiKey}` };
-  const timeoutSignal = new AbortController();
-  const timeout = setTimeout(() => timeoutSignal.abort(), getDiscoveryTimeoutMs());
-
-  try {
-    const mainResponse = await fetch(`${baseUrl}/models?prefix=alias`, {
-      headers,
-      signal: timeoutSignal.signal,
-    });
-
-    if (!mainResponse.ok) {
-      throw new Error(await responseErrorSummary(mainResponse));
-    }
-
-    const payload = (await mainResponse.json()) as DataPayload<OmnirouteModel>;
-
-    const supplementalMetadataUrl = deriveSupplementalReasoningMetadataUrl(baseUrl);
-    let supplementalEffortIndex = buildSupplementalEffortIndex([]);
-
-    try {
-      const supplementalResponse = await fetch(supplementalMetadataUrl, {
-        headers,
-        signal: timeoutSignal.signal,
-      });
-
-      if (supplementalResponse.ok) {
-        const supplementalPayload = (await supplementalResponse.json()) as DataPayload<ReasoningMetadataModel>;
-        supplementalEffortIndex = buildSupplementalEffortIndex(supplementalPayload.data ?? []);
-      } else if (supplementalResponse.status !== 404) {
-        console.warn(
-          `[${PROVIDER}] Supplemental reasoning-effort discovery failed (${supplementalResponse.status}); continuing with suffix inference only.`,
-        );
-      }
-    } catch (supplementalError) {
-      console.warn(
-        `[${PROVIDER}] Supplemental reasoning-effort discovery failed; continuing with suffix inference only.`,
-        supplementalError instanceof Error ? supplementalError.message : supplementalError,
-      );
-    }
-
-    const models = normalizeModels(payload.data ?? [], supplementalEffortIndex);
-    if (models.length > 0) return models;
-
-    throw new Error("Model discovery returned no usable text models");
-  } catch (error) {
-    console.warn(
-      `[${PROVIDER}] Model discovery failed; keeping the existing cached provider if available.`,
-      errorMessage(error),
-    );
-    return [];
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function refreshCacheFromDiscovery(baseUrl: string) {
-  const models = await discoverModels(baseUrl);
-  if (models.length === 0) return [];
-
-  try {
-    await writeModelCache(baseUrl, models);
-  } catch (error) {
-    console.warn(`[${PROVIDER}] Model discovery succeeded but cache write failed: ${errorMessage(error)}`);
-  }
-
-  return models;
-}
-
-function warnProviderUpdateFailure(error: unknown) {
-  console.warn(`[${PROVIDER}] Model discovery succeeded but provider update failed: ${errorMessage(error)}`);
-}
-
-async function bootstrapModels(
-  pi: ExtensionAPI,
-  baseUrl: string,
-  options: { refreshAfterCacheHit: boolean; refreshWhenCacheMissing: boolean },
-  scheduleRefresh: () => Promise<void> | undefined,
-) {
-  const cachedModels = readCachedModels(baseUrl);
-  if (cachedModels.length > 0) {
-    registerOmnirouteProvider(pi, baseUrl, cachedModels);
-    if (options.refreshAfterCacheHit) void scheduleRefresh();
-    return;
-  }
-
-  if (!options.refreshWhenCacheMissing) return;
-
-  const refresh = scheduleRefresh();
-  if (!refresh) return;
-  await refresh;
-}
-
-export default async function (pi: ExtensionAPI) {
-  const baseUrl = getBaseUrl();
-  if (!baseUrl) return;
-
-  const args = getProcessArgs();
-  const sessionLifecycle = new AbortController();
-
-  let refreshInFlight: Promise<void> | undefined;
-  const scheduleRefresh = () => {
-    if (refreshInFlight) return refreshInFlight;
-    if (!getDiscoveryApiKey()) return undefined;
-
-    refreshInFlight = (async () => {
-      const models = await refreshCacheFromDiscovery(baseUrl);
-      if (models.length === 0) return;
-      if (sessionLifecycle.signal.aborted) return;
-
-      registerOmnirouteProvider(pi, baseUrl, models);
-    })()
-      .catch(warnProviderUpdateFailure)
-      .finally(() => {
-        refreshInFlight = undefined;
-      });
-
-    return refreshInFlight;
-  };
-
-  pi.on("session_shutdown", () => {
-    sessionLifecycle.abort();
-  });
-
-  pi.on("session_start", (_event, ctx) => {
-    if (ctx.mode !== "tui" || isOfflineMode()) return;
-    void scheduleRefresh();
-  });
-
-  if (!hasHelpArg(args)) {
-    await bootstrapModels(
-      pi,
-      baseUrl,
-      {
-        refreshAfterCacheHit: shouldRefreshAfterCachedBootstrap(args),
-        refreshWhenCacheMissing: !isOfflineMode(),
-      },
-      scheduleRefresh,
-    );
-  }
 }

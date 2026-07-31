@@ -12,14 +12,18 @@ _Avoid_: generic proxy, upstream provider
 The set of OmniRoute models exposed to Pi for selection.
 _Avoid_: model cache, provider list
 
-**Model Catalog Cache**:
-A local snapshot of the Model Catalog used to make interactive startup resilient when live discovery is slow or unavailable.
+**Provider Model Store**:
+Pi's provider-scoped persisted catalog (`context.store`) used as the authoritative Model Catalog snapshot across sessions.
+_Avoid_: extension-owned cache writes after migration
+
+**Legacy Model Catalog Cache**:
+The pre-migration local OmniRoute catalog file, imported once into the Provider Model Store and retained only for downgrade.
 _Avoid_: prompt cache, response cache
 
 **Discovery Refresh**:
-A best-effort attempt to fetch the current Model Catalog from OmniRoute and replace the Model Catalog Cache when the result is valid.
-_Avoid_: blocking discovery, forced reload
+Pi-invoked `refreshModels` work that may fetch the current Model Catalog from OmniRoute and write the Provider Model Store when the result is valid.
+_Avoid_: session_start refresh, extension refresh queue
 
 **Interactive Session Startup**:
-Startup of a Pi TUI session. This path uses the Model Catalog Cache immediately, then refreshes in the background. `pi --list-models` follows the same cache-first bootstrap behavior.
+Startup of a Pi session. Pi decides offline/network and force refresh; the extension only implements `refreshModels`.
 _Avoid_: print startup, RPC startup

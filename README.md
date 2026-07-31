@@ -1,6 +1,6 @@
 # OmniRoute Pi Extension
 
-A Pi extension that registers the `omniroute` model provider from an OmniRoute-compatible gateway.
+A Pi extension that registers the `omniroute` model provider from an OmniRoute-compatible gateway using Pi's public `refreshModels` provider contract.
 
 ## Installation
 
@@ -8,14 +8,18 @@ A Pi extension that registers the `omniroute` model provider from an OmniRoute-c
 pi install git:github.com/xz-dev/omniroute-pi-extension
 ```
 
+Requires Pi coding-agent APIs available in upstream `@earendil-works/pi-coding-agent` 0.83.0+ (`registerProvider` + `refreshModels` + provider-scoped model store). The published peer dependency remains `*` so Pi installs do not bundle a second core copy.
+
 ## What it does
 
 - Reads `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`.
-- Registers every OmniRoute model through Pi's built-in `openai-responses` provider API. Pi renders readable reasoning summaries, while OmniRoute supplies a visible placeholder when Codex exposes only encrypted private reasoning.
-- Registers cached models immediately when a valid Model Catalog Cache exists.
-- Falls back to live discovery when needed.
-- Writes the normalized Model Catalog Cache under `PI_CODING_AGENT_DIR` unless `OMNIROUTE_MODEL_CACHE_PATH` is set.
-- When a valid Model Catalog Cache exists, keeps Pi Coding Agent interactive startup from silently falling back to another logged-in provider/model when OmniRoute live discovery is slow or unavailable, which can be hidden from users and may cause unexpected extra cost.
+- Registers `omniroute` once with Pi's built-in `openai-responses` API and a public `refreshModels(context)` implementation.
+- Restores the catalog from Pi's provider-scoped model store; on first upgrade, imports a valid legacy OmniRoute cache into that store without copying secrets, and keeps the legacy file for downgrade.
+- Follows Pi's four-hour remote-catalog freshness window; `force` refreshes still hit the network.
+- Fetches the primary alias catalog and optional supplemental reasoning metadata concurrently with independent timeouts composed with Pi's abort signal. Supplemental timeout/abort/failure is silent and never blocks primary success.
+- Parent cancellation publishes no partial catalog and writes no store entry.
+- Primary discovery failures reject through Pi (no `console.warn`, no configured URL/key in error text).
+- Keeps conversational text models only (excludes embedding/image/video/audio and non-text output), while preserving suffix folding and synthetic Codex ultra alias filtering.
 
 ## Configuration
 
@@ -23,16 +27,18 @@ pi install git:github.com/xz-dev/omniroute-pi-extension
 | --- | --- |
 | `OMNIROUTE_BASE_URL` | OmniRoute base URL, without a trailing slash. |
 | `OMNIROUTE_API_KEY` | API key used for live discovery and requests. |
-| `OMNIROUTE_MODEL_CACHE_PATH` | Optional explicit cache file path. |
-| `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` | Live discovery timeout in milliseconds. |
-| `PI_CODING_AGENT_DIR` | Base directory for the default cache path. |
-| `PI_OFFLINE` | When truthy, disables live discovery and refresh. |
+| `OMNIROUTE_MODEL_CACHE_PATH` | Optional explicit legacy cache path used only for one-time import. |
+| `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` | Per-request discovery timeout in milliseconds (primary and supplemental each). |
+| `PI_CODING_AGENT_DIR` | Base directory for the default legacy cache path. |
+| `PI_OFFLINE` | Handled by Pi (`allowNetwork: false`); the extension does not run its own offline branch. |
 
-Default cache path:
+Default legacy cache path (import only):
 
 ```text
 ${PI_CODING_AGENT_DIR:-~/.pi/agent}/omniroute/models-<first 16 hex chars of sha256(baseUrl)>.json
 ```
+
+Authoritative persistence after import is Pi's provider-scoped models store.
 
 ## Commands
 
@@ -40,10 +46,6 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/omniroute/models-<first 16 hex chars of sha2
 - `npm run check` — run syntax checks and tests.
 - `npm run check:syntax` — run the Node syntax check used by the test flow.
 
-## Repository layout
+## Repository
 
-- `index.ts` — extension entry point.
-- `tests/omniroute-cache.test.ts` — model catalog cache tests.
-- `docs/features.md` — runtime behavior notes.
-- `docs/adr/0001-discover-reasoning-effort-metadata.md` — design record for reasoning-effort discovery beyond `/v1/models`.
-- `docs/adr/0002-cache-model-catalog-for-interactive-startup.md` — design record for cache-first startup.
+https://github.com/xz-dev/omniroute-pi-extension

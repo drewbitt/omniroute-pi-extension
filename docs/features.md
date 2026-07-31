@@ -4,146 +4,52 @@ This document records the runtime features and invariants implemented by the Omn
 
 ## Provider registration
 
-- Registers a Pi model provider named `omniroute` with display name `OmniRoute`.
-- Uses Pi's built-in `openai-responses` provider API implementation directly for every discovered and cached model.
-- Delegates Responses streaming and reasoning rendering to Pi. Readable thinking comes from upstream reasoning summaries, while OmniRoute supplies a visible placeholder when Codex exposes only encrypted private reasoning; the extension does not relabel empty or redacted blocks.
-- The integration suite uses the upstream `@earendil-works/pi-ai` dependency bundled inside the ordinary `@earendil-works/pi-coding-agent` development dependency and exercises its lazy Responses API over two HTTP/SSE turns. This keeps the test dependency graph aligned with a standard Pi installation instead of a private Pi-AI fork; the peer dependency remains version-agnostic.
+- Registers a Pi model provider named `omniroute` with display name `OmniRoute` exactly once during extension load.
+- Uses Pi's built-in `openai-responses` provider API for every model.
+- Registers via public `pi.registerProvider` with `refreshModels(context)` and empty initial `models`; Pi owns refresh scheduling, store wiring, and cached-model error UI.
+- Does not attach `session_start` / `session_shutdown` refresh handlers, refresh queues, argv/TTY routing, or repeated provider re-registration.
 - Sends requests to `OMNIROUTE_BASE_URL` and uses the literal Pi config reference `$OMNIROUTE_API_KEY` for request authentication.
-- Registers the provider in every non-metadata Pi startup path where models can be used:
-  - interactive TUI sessions;
-  - `pi --list-models`;
-  - print/headless invocations, including piped stdin/stdout;
-  - JSON/RPC modes;
-  - SDK/subprocess-style runs such as subagent workers.
-- Skips provider bootstrap for metadata-only commands that do not need models, currently `--help`, `-h`, `--version`, and `-v`.
+- Development baseline is `@earendil-works/pi-coding-agent` 0.83.0; peer dependency remains `*` per Pi package packaging guidance.
+
+## Catalog persistence
+
+- Authoritative catalog storage is Pi's provider-scoped models store (`context.store`).
+- On first upgraded run, a valid legacy schemaVersion=2 OmniRoute cache matching the configured base URL is imported into the Pi store without copying secrets.
+- The legacy cache file is retained for downgrade compatibility and is not rewritten by discovery.
+- Ordinary refreshes reuse a stored catalog fresher than four hours; `force` still performs network discovery.
+
+## Discovery refresh
+
+- Primary request: `GET {baseUrl}/models?prefix=alias`.
+- Optional supplemental reasoning metadata is fetched concurrently from the derived `/api/v1/vscode/_/models` URL.
+- Each request uses an independent timeout (`OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS`, default 15s) composed with Pi's parent `context.signal`.
+- Supplemental timeout/abort/failure is silent: it never delays, invalidates, or warns after primary success. Metadata is used only if already settled when primary is ready; otherwise the request is cancelled/ignored and normalization proceeds from alias suffixes alone.
+- Parent abort before a successful write yields no partial return and no store write.
+- Primary HTTP failures reject with a sanitized `Model discovery failed: <status> <statusText>` message (no URL, API key, Authorization header, or response body). The extension does not `console.warn` discovery failures.
+- Empty discovery results leave any previously stored catalog in place.
+
+## Conversational model boundary
+
+- Pi separates chat `Model` catalogs from image-generation `ImagesModel` catalogs.
+- OmniRoute's mixed catalog is filtered to conversational text models:
+  - exclude known non-chat types `embedding`, `image`, `video`, `audio`;
+  - if any catalog row for an id is non-chat (typed or non-text output), drop that entire id (including untyped duplicates);
+  - require text output when `output_modalities` is declared.
+- Synthetic Codex ultra aliases remain hidden; verified reasoning-effort suffix variants still fold into the base model.
 
 ## Configuration
 
 | Environment variable | Purpose |
 | --- | --- |
 | `OMNIROUTE_BASE_URL` | Required base URL for OmniRoute, normalized by trimming trailing slashes. |
-| `OMNIROUTE_API_KEY` | Required for live model discovery and request authentication; cached startup can still register cached models without it. |
-| `OMNIROUTE_MODEL_CACHE_PATH` | Optional explicit model catalog cache path. |
-| `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` | Optional positive timeout for live discovery; defaults to 15 seconds. |
-| `PI_CODING_AGENT_DIR` | Used to derive the default cache location when `OMNIROUTE_MODEL_CACHE_PATH` is unset. |
-| `PI_OFFLINE` | When truthy (`1`, `true`, `yes`), disables live discovery/refresh and uses only an existing valid cache. |
+| `OMNIROUTE_API_KEY` | Used for live discovery and request authentication (also via Pi credential resolution). |
+| `OMNIROUTE_MODEL_CACHE_PATH` | Optional explicit legacy cache path for one-time import only. |
+| `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` | Per-request discovery timeout in milliseconds. |
+| `PI_CODING_AGENT_DIR` | Base directory for the default legacy cache path. |
+| `PI_OFFLINE` | Interpreted by Pi as `allowNetwork: false` during refresh. |
 
-The default cache path is:
+## Security invariants
 
-```text
-${PI_CODING_AGENT_DIR:-~/.pi/agent}/omniroute/models-<first 16 hex chars of sha256(baseUrl)>.json
-```
-
-## Model Catalog Cache
-
-The Model Catalog Cache is a local JSON snapshot of normalized OmniRoute models.
-When a valid cache exists, it lets Pi Coding Agent interactive startup keep using OmniRoute models instead of quietly falling back to another logged-in provider/model when discovery is slow or unavailable; that fallback can be hidden from users and may lead to unexpected extra cost.
-
-Cache entries include:
-
-- `schemaVersion` (currently `2`, identifying the `openai-responses` transport contract; version `1` completions caches are rejected);
-- `provider`;
-- normalized `baseUrl`;
-- `fetchedAt` timestamp;
-- normalized provider `models`.
-
-Cache behavior:
-
-- Cache files are validated before use.
-- Cached catalogs reapply the exact Codex Sol/Terra synthetic ultra-alias filter, including old offline or headless caches created before the filter existed.
-- Invalid, mismatched, malformed, or empty cache files are ignored.
-- Cache writes are atomic: write to a temporary file, then rename into place.
-- Cache directories are created with mode `0700`; cache files are written with mode `0600`.
-- Secrets are not persisted in cache files. The cache stores model metadata only, not `OMNIROUTE_API_KEY`, request headers, or bearer tokens.
-
-## Startup and refresh behavior
-
-All non-metadata startup paths follow the same provider availability invariant: register OmniRoute from cache if possible; otherwise perform live discovery unless offline or missing discovery credentials.
-
-### Cache hit
-
-- Registers cached models immediately so the `omniroute` provider is available during startup.
-- Interactive TUI sessions and `pi --list-models` schedule a best-effort background Discovery Refresh after registering cached models.
-- Headless/cache-hit paths such as print, JSON/RPC, piped stdio, and subagent workers use cached models without background refresh to keep non-interactive startup predictable.
-
-### Cache miss or invalid cache
-
-- If not offline and discovery credentials are present, startup performs blocking live discovery and registers the discovered provider before continuing.
-- Successful discovery writes a normalized cache for future startups.
-- If offline or discovery credentials are missing, no provider is registered unless a valid cache exists.
-
-### Session refresh
-
-- TUI `session_start` events schedule a best-effort Discovery Refresh.
-- Non-TUI `session_start` events do not trigger extra refresh work.
-- Refreshes are coalesced with an in-flight refresh promise so repeated triggers do not duplicate concurrent discovery requests.
-- A live discovery result replaces the cache/provider only when it contains at least one usable text model.
-- Discovery or provider-update failures are logged as warnings and keep the existing cached provider when available.
-
-## Live discovery
-
-Live discovery uses the OpenAI-compatible `${OMNIROUTE_BASE_URL}/models?prefix=alias` endpoint as the primary model catalog, asking OmniRoute to emit the short provider alias prefix (e.g. `cx/...`, `ollamacloud/...`) instead of the full canonical provider ID. The `/v1/models` shape does not standardize Pi thinking-level / reasoning-effort metadata, so the extension first infers efforts from a strict model ID suffix whitelist and then probes a supplemental OmniRoute metadata endpoint.
-
-The currently available supplemental endpoint is the VS Code-compatible route:
-
-```text
-<base path without trailing /api or /v1>/api/v1/vscode/_/models
-```
-
-The extension uses this endpoint only because it can expose reasoning-effort metadata; it does not depend on VS Code itself. The supplemental endpoint is optional:
-
-- `404` is ignored.
-- Other failures are warned about, but primary discovery continues with suffix-based thinking-level inference.
-- Reasoning-effort metadata is read from `supportsReasoningEffort`, `supports_reasoning_effort`, `supportedReasoningEfforts`, `configSchema.properties.reasoningEffort.enum`, or `configurationSchema.properties.reasoningEffort.enum`; matching uses strict model keys (`id`, `parent`, `owned_by/root`) first, then a root fallback only when that root appears once in the supplemental metadata.
-
-## Model normalization
-
-The extension converts raw OmniRoute models into Pi provider models.
-
-Normalization rules:
-
-- Uses the short provider alias prefix (e.g. `cx/gpt-5.5`, `ollamacloud/deepseek-v4-pro`) instead of the full canonical provider-id prefix (e.g. `codex/gpt-5.5`, `ollama-cloud/deepseek-v4-pro`), because the UI shows the short alias. Live discovery relies on OmniRoute's `?prefix=alias` catalog mode to emit alias-prefixed model ids.
-- Excludes image-output-only models and models whose output modalities do not include text.
-- Deduplicates raw entries by model `id`.
-- For duplicate IDs, prefers the variant with image input support, then the larger context window, then the larger max output token count.
-- Sorts models by ID for deterministic output.
-- Recognizes only the suffixes `-none`, `-low`, `-medium`, `-high`, `-xhigh`, and `-max` as reasoning variants.
-- Folds a suffix variant only when its exact suffix-stripped base is present as an eligible text model in the same primary catalog response.
-- Keeps unknown suffixes and whitelisted suffix IDs without an eligible text base independently routable; an image-output model with the same bare ID is not treated as the base, and no bare model ID is synthesized.
-- Hides only the Codex-owned synthetic `gpt-5.6-sol-ultra` and `gpt-5.6-terra-ultra` aliases. Pi has no `ultra` thinking level, and these aliases reduce to the base model with `max` effort in the current transport; other providers and other unknown `-ultra` IDs remain independently routable.
-- Infers reasoning efforts from verified suffix variants first, then merges supplemental reasoning-effort metadata when available.
-- Represents Pi `off` as `null`, so no reasoning effort is sent; maps Pi `minimal` to provider effort `low`; and preserves `xhigh` and `max` as independent levels.
-- Marks a model as reasoning-capable when raw capabilities include `reasoning`/`thinking` or when reasoning efforts are discovered.
-- Maps unsupported thinking levels to `null` in `thinkingLevelMap` so Pi can hide or clamp them.
-- For `deepseek-thinking` family models, maps Pi `xhigh` to provider value `max`.
-- Sets input modalities to `['text']` or `['text', 'image']`.
-- Uses zero-cost metadata because OmniRoute pricing is not represented by this extension.
-- Defaults context and max-output token values when OmniRoute does not provide them.
-
-## Validation coverage
-
-The test suite covers:
-
-- cache-first startup for TUI and `--list-models`;
-- provider bootstrap in headless modes including print, JSON/RPC, and non-TTY stdio;
-- blocking discovery on cache miss for interactive and headless paths;
-- offline mode behavior;
-- invalid/mismatched cache rejection;
-- cache write failures;
-- refresh coalescing;
-- TUI-only `session_start` refresh;
-- preserving cached provider/cache when live discovery fails or returns no usable live catalog;
-- real fixture model normalization;
-- successful supplemental reasoning-effort metadata merging;
-- exact Codex Sol/Terra synthetic ultra-alias filtering without affecting `max`, other Codex ultra IDs, or other providers;
-- provider config shape assertions (`name`, `api`, and literal `apiKey` reference);
-- real Pi Responses consumer behavior across streamed text, visible reasoning summaries, opaque encrypted reasoning continuation, function calls, and function-call outputs;
-- secret non-leakage into cache/fixtures;
-- base URL normalization;
-- default cache path derivation under `PI_CODING_AGENT_DIR`.
-
-Run validation with:
-
-```bash
-npm run check
-```
+- Never log, warn, snapshot, or embed configured OmniRoute URL or API key values.
+- Cache/store payloads contain model catalog fields only.
+- Tests use loopback/fake credentials only and assert error sanitization.

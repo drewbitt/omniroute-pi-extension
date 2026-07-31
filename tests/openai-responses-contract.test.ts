@@ -16,30 +16,20 @@ const piAgentPackagePath = join(
 const piAgentPackageJson = JSON.parse(
   await readFile(join(piAgentPackagePath, "package.json"), "utf8"),
 ) as { dependencies?: Record<string, string> };
+// npm may hoist @earendil-works/pi-ai next to pi-coding-agent or nest it underneath.
+const nestedPiAiPath = join(piAgentPackagePath, "node_modules", "@earendil-works", "pi-ai");
+const hoistedPiAiPath = join(projectRoot, "node_modules", "@earendil-works", "pi-ai");
+const piAiPackagePath = await readFile(join(nestedPiAiPath, "package.json"), "utf8")
+  .then(() => nestedPiAiPath)
+  .catch(async () => {
+    await readFile(join(hoistedPiAiPath, "package.json"), "utf8");
+    return hoistedPiAiPath;
+  });
 const upstreamPiAiPackageJson = JSON.parse(
-  await readFile(
-    join(
-      piAgentPackagePath,
-      "node_modules",
-      "@earendil-works",
-      "pi-ai",
-      "package.json",
-    ),
-    "utf8",
-  ),
+  await readFile(join(piAiPackagePath, "package.json"), "utf8"),
 ) as { name?: string; version?: string };
 const { openAIResponsesApi } = await import(
-  pathToFileURL(
-    join(
-      piAgentPackagePath,
-      "node_modules",
-      "@earendil-works",
-      "pi-ai",
-      "dist",
-      "api",
-      "openai-responses.lazy.js",
-    ),
-  ).href
+  pathToFileURL(join(piAiPackagePath, "dist", "api", "openai-responses.lazy.js")).href
 );
 
 // Consumer compatibility coverage for the upstream Responses stream bundled with Pi.
@@ -171,10 +161,10 @@ after(async () => {
 
 test("uses the upstream Pi-AI dependency bundled with pi-coding-agent", () => {
   assert.equal(upstreamPiAiPackageJson.name, "@earendil-works/pi-ai");
-  assert.match(upstreamPiAiPackageJson.version ?? "", /^0\.80\./);
+  assert.match(upstreamPiAiPackageJson.version ?? "", /^0\.83\./);
   assert.match(
     piAgentPackageJson.dependencies?.["@earendil-works/pi-ai"] ?? "",
-    /^\^0\.80\./,
+    /^\^0\.83\./,
   );
 });
 
