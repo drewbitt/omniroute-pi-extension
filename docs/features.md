@@ -8,6 +8,10 @@
 - The provider has ID `omniroute`, display name `OmniRoute`, no static models, public Responses `stream`/`streamSimple` behavior, and `envApiKeyAuth("OmniRoute API key", ["OMNIROUTE_API_KEY"])`.
 - Does not attach session lifecycle handlers, manually register provider configs, import Pi internals, or bundle a second Pi core.
 
+## Structure
+
+`index.ts` visibly reads configuration, constructs and registers the complete provider, and composes the gateway catalog snapshot with model normalization. `src/gateway-catalog.ts` owns configuration validation and atomic gateway discovery; `src/model-normalizer.ts` owns conversion of that `CatalogSnapshot` to Pi models.
+
 ## Pi-owned lifecycle
 
 `createProvider` is the owner of dynamic catalog lifecycle:

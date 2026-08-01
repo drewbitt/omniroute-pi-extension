@@ -19,3 +19,8 @@ _Avoid_: provider/root/DeepSeek heuristics, inferred tiers
 
 **Subagent / Headless Availability**: Standard Pi provider resolution for ordinary shared-modelRuntime workers and standalone services restoring Pi's provider store.
 _Avoid_: TUI/session-hook-only provider
+
+## Structure
+
+- `index.ts` visibly reads validated configuration, constructs the complete public provider, fetches a catalog snapshot, normalizes models, and registers it.
+- `src/gateway-catalog.ts` owns gateway configuration and atomic catalog retrieval; `src/model-normalizer.ts` maps the resulting `CatalogSnapshot` to full Pi models.

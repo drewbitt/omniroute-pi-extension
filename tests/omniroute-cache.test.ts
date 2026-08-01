@@ -327,6 +327,53 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     assert.equal((model.thinkingLevelMap as Record<string, unknown>).ultra, undefined);
   });
 
+  it("publishes GLM-5.2 reasoning from a metadata-driven loopback fixture, not a live gateway claim", async () => {
+    const glmPrimary = primaryRow("ollamacloud/glm-5.2", {
+      root: "glm-5.2",
+      context_length: 976000,
+      max_output_tokens: 131072,
+      capabilities: { reasoning: true, thinking: true },
+    });
+    const exactSupplemental = {
+      id: "ollama-cloud/glm-5.2",
+      root: "glm-5.2",
+      parent: "ollamacloud/glm-5.2",
+      supportedReasoningEfforts: ["low", "medium", "high"],
+    };
+    const supported = await createFixtureServer({
+      primary: { body: data([glmPrimary]) },
+      supplemental: { body: data([exactSupplemental]) },
+    });
+    servers.push(supported);
+    const provider = captureProvider(supported.baseUrl);
+    await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+    const glm = getModel(provider, "ollamacloud/glm-5.2");
+    assert.equal(glm.reasoning, true);
+    assert.deepEqual(glm.thinkingLevelMap, {
+      off: null,
+      minimal: "low",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: null,
+      max: null,
+    });
+    assert.equal(glm.contextWindow, 976000);
+    assert.equal(glm.maxTokens, 131072);
+
+    const unsupported = await createFixtureServer({
+      primary: { body: data([glmPrimary]) },
+      supplemental: { body: data([{ ...exactSupplemental, supportedReasoningEfforts: ["none", "unknown"] }]) },
+    });
+    servers.push(unsupported);
+    const negativeProvider = captureProvider(unsupported.baseUrl);
+    await negativeProvider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+    const unsupportedGlm = getModel(negativeProvider, "ollamacloud/glm-5.2");
+    assert.equal(unsupportedGlm.reasoning, false);
+    assert.equal(unsupportedGlm.thinkingLevelMap, undefined);
+  });
+
   it("uses supplemental root matching only when the contributing root is unique and fails closed for none-only data", async () => {
     const server = await createFixtureServer({
       primary: {
