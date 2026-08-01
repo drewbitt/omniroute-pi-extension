@@ -40,9 +40,7 @@ const FIXTURE_API_KEY = "fake-offline-key-not-live";
 const ENV_KEYS = [
   "OMNIROUTE_BASE_URL",
   "OMNIROUTE_API_KEY",
-  "OMNIROUTE_MODEL_CACHE_PATH",
   "PI_OFFLINE",
-  "PI_CODING_AGENT_DIR",
 ] as const;
 
 function storedFixtureModel(baseUrl: string, id = FIXTURE_MODEL_ID) {
@@ -103,7 +101,6 @@ describe("OmniRoute subagent / headless model availability", () => {
     process.env.OMNIROUTE_API_KEY = FIXTURE_API_KEY;
     process.env.PI_OFFLINE = "1";
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    delete process.env.OMNIROUTE_MODEL_CACHE_PATH;
 
     await writeAgentDirFixtures(agentDir, FIXTURE_BASE_URL);
   });

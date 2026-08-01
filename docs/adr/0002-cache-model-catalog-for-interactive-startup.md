@@ -1,9 +1,13 @@
-# Persist OmniRoute model catalog through Pi's provider store
+# Delegate OmniRoute dynamic-catalog lifecycle to Pi
 
-OmniRoute model discovery can be slow or unavailable, but Pi now owns remote-catalog refresh, four-hour freshness, provider-scoped persistence, and cached-model error UI through `registerProvider` + `refreshModels(context)`.
+## Decision
 
-We decided that the OmniRoute extension must register once with that public contract and restore catalogs from `context.store`. On first upgrade, a valid legacy schemaVersion=2 OmniRoute cache is imported into the Pi store without copying secrets; the legacy file remains for downgrade only and is no longer the write path. Interactive, list-models, headless, and offline behavior all flow through Pi's `allowNetwork` / `force` / `signal` refresh context instead of extension-owned `session_start` refresh queues or argv/TTY branching.
+The OmniRoute extension registers a complete provider through Pi's public `createProvider` and `pi.registerProvider(provider)` APIs. Pi owns dynamic catalog store restoration and writes, refresh scheduling, effective credential resolution, in-flight refresh de-duplication, offline/cache-only behavior, and fallback after a failed online refresh.
 
-Because the Pi store is provider-scoped (one `omniroute` entry), not URL-scoped, a change of `OMNIROUTE_BASE_URL` must not project catalog IDs learned from another gateway. Before reuse, the extension compares each stored model's `baseUrl` (trailing slash normalized) to the current configured base URL; on mismatch or missing/malformed `baseUrl` it calls `context.store.delete()` immediately and continues as empty. Matching current-URL legacy import and online discovery may repopulate afterward.
+The extension contains only gateway-specific discovery and normalization. Its `fetchModels(context)` performs the mandatory concurrent primary and supplemental requests and returns a complete fresh `Model<"openai-responses">[]` only on dual success.
 
-This keeps model selection resilient while eliminating extension-owned abort noise, duplicate refresh work, and stale extension instances re-registering providers after disposal.
+## Consequences
+
+Remove extension-owned cache paths, file I/O, hash/path logic, four-hour freshness, `force` handling, legacy cache migration, base-URL store isolation, custom store parsing/sanitization, and custom offline/fallback lifecycle.
+
+A Pi provider store is provider-scoped. Changing `OMNIROUTE_BASE_URL` does not cause the extension to delete or reinterpret the store; Pi's public lifecycle is the accepted behavior. Gateway request and model-normalization contracts remain unchanged and are documented in [`../features.md`](../features.md).

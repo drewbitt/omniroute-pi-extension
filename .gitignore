@@ -1,4 +1,5 @@
 .pi/
+.serena/
 node_modules/
 .env
 *.log

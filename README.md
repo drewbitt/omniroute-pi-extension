@@ -1,6 +1,6 @@
 # OmniRoute Pi Extension
 
-A Pi extension that registers the `omniroute` model provider from an OmniRoute-compatible gateway using Pi's public `refreshModels` provider contract.
+A Pi extension that registers an `omniroute` provider backed by an OmniRoute-compatible gateway.
 
 ## Installation
 
@@ -8,45 +8,35 @@ A Pi extension that registers the `omniroute` model provider from an OmniRoute-c
 pi install git:github.com/xz-dev/omniroute-pi-extension
 ```
 
-Requires Pi coding-agent APIs available in upstream `@earendil-works/pi-coding-agent` 0.83.0+ (`registerProvider` + `refreshModels` + provider-scoped model store). The published peer dependency remains `*` so Pi installs do not bundle a second core copy.
+Requires Pi 0.83-compatible public `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` APIs. The package declares both as peers and development dependencies so it uses Pi's installed core rather than bundling another one.
 
 ## What it does
 
-- Reads `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`.
-- Registers `omniroute` once with Pi's built-in `openai-responses` API and a public `refreshModels(context)` implementation.
-- Restores the catalog from Pi's provider-scoped model store (`omniroute` in `models-store.json`) and revalidates on a four-hour freshness window, with `force` (including `pi update --models`) bypassing freshness when network is allowed.
-- On first upgrade with an empty matching store, can stage a valid legacy OmniRoute cache for the current base URL without copying secrets, and keeps the per-URL legacy file for downgrade (not rewritten).
-- Isolates catalogs per base URL: store entries from a different or malformed URL are deleted and never served.
-- Discovers models from the primary alias catalog and supplemental VS Code metadata as one atomic current-gateway snapshot. Either participant failure cancels the sibling and rejects without writing a partial catalog; dual success publishes one fresh snapshot only.
-- Keeps conversational text models only (excludes embedding/image/video/audio and non-text output), folds verified reasoning suffixes into exact bases, and filters a fixed set of synthetic Codex ultra alias IDs. Reasoning efforts come from primary tiers, verified suffixes, and matched supplemental metadata; `ultra` is never treated as a Pi effort.
-- Stays available to ordinary subagent and headless/SDK child sessions once registered into Pi's `modelRuntime` and restored from the provider model store. Default pi-subagents workers pass the parent's `modelRuntime` and load extensions; intentional `extensions: false` / isolated agents are out of scope for this guarantee.
+- Activates only when `OMNIROUTE_BASE_URL` is valid and non-empty.
+- Registers one complete public Pi provider with `createProvider`, `envApiKeyAuth("OmniRoute API key", ["OMNIROUTE_API_KEY"])`, and `openAIResponsesApi()` from Pi's public compatibility entrypoint.
+- Leaves credential resolution, store restore/write, refresh scheduling, in-flight refresh de-duplication, and offline fallback to Pi's provider lifecycle.
+- Fetches the primary alias catalog and grouped VS Code reasoning metadata concurrently as required atomic participants. Either failure cancels the other and returns a sanitized error; dual success—including empty arrays—publishes one fresh model list.
+- Uses primary rows for model IDs and base metadata. Reasoning effort is the union of primary effort tiers, verified exact-base suffix variants, and matched supplemental metadata. Unknown effort values (including `ultra`) are ignored; no adjustable effort and `none` alone fail closed.
+- Keeps conversational text models, de-duplicates them, and excludes only the four accepted synthetic `codex`/`cx` ultra aliases.
+- Remains available to ordinary shared-modelRuntime subagents and headless services through Pi's provider store and public lifecycle.
 
-Exact atomic refresh, error sanitization, supplemental matching, reasoning fail-closed rules, and cache/store contracts live in [`docs/features.md`](docs/features.md) and [`docs/adr/0001-discover-reasoning-effort-metadata.md`](docs/adr/0001-discover-reasoning-effort-metadata.md).
+The exact gateway contracts are documented in [`docs/features.md`](docs/features.md) and [`docs/adr/0001-discover-reasoning-effort-metadata.md`](docs/adr/0001-discover-reasoning-effort-metadata.md).
 
 ## Configuration
 
 | Variable | Purpose |
 | --- | --- |
-| `OMNIROUTE_BASE_URL` | OmniRoute base URL, without a trailing slash. |
-| `OMNIROUTE_API_KEY` | API key used for live discovery and requests. |
-| `OMNIROUTE_MODEL_CACHE_PATH` | Optional explicit legacy cache path used only for one-time import. |
-| `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` | Per-request discovery timeout in milliseconds (primary and supplemental each). |
-| `PI_CODING_AGENT_DIR` | Base directory for the default legacy cache path. |
-| `PI_OFFLINE` | Handled by Pi (`allowNetwork: false`); the extension does not run its own offline branch. |
+| `OMNIROUTE_BASE_URL` | Required OmniRoute base URL; trailing slashes are normalized. |
+| `OMNIROUTE_API_KEY` | Pi's environment fallback for the OmniRoute credential lifecycle. |
+| `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` | Per-participant discovery timeout in milliseconds (default: 15000). |
 
-Default legacy cache path (import only):
-
-```text
-${PI_CODING_AGENT_DIR:-~/.pi/agent}/omniroute/models-<first 16 hex chars of sha256(baseUrl)>.json
-```
-
-Authoritative persistence after import is Pi's provider-scoped models store.
+There is no extension-owned cache path, freshness interval, legacy cache import, base-URL store isolation, or offline-mode branch. Pi supplies `allowNetwork`, persistence, restoration, and fallback through the public provider API.
 
 ## Commands
 
-- `npm test` — run the test suite, including the two-turn Responses consumer contract against the upstream Pi-AI bundled with the ordinary `@earendil-works/pi-coding-agent` development dependency, plus the subagent/headless model-availability regression.
-- `npm run check` — run syntax checks and tests.
-- `npm run check:syntax` — run the Node syntax check used by the test flow.
+- `npm test` — run loopback provider, loader, Responses, and subagent compatibility tests.
+- `npm run check` — run syntax checks and the full test suite.
+- `npm run check:syntax` — run the syntax check used by the test flow.
 
 ## Repository
 

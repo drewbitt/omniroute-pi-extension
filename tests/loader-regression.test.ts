@@ -12,7 +12,7 @@ const projectRoot = resolve(__dirname, "..");
 const extensionPath = join(projectRoot, "index.ts");
 
 const BASE_URL = "https://omniroute.test";
-const ENV_KEYS = ["OMNIROUTE_BASE_URL", "OMNIROUTE_API_KEY", "OMNIROUTE_MODEL_CACHE_PATH", "PI_OFFLINE"] as const;
+const ENV_KEYS = ["OMNIROUTE_BASE_URL", "OMNIROUTE_API_KEY", "PI_OFFLINE"] as const;
 
 describe("Pi extension loader regression", () => {
   let tempDir: string;
@@ -25,7 +25,6 @@ describe("Pi extension loader regression", () => {
     process.env.OMNIROUTE_BASE_URL = BASE_URL;
     process.env.OMNIROUTE_API_KEY = "loader-test-key";
     process.env.PI_OFFLINE = "1";
-    delete process.env.OMNIROUTE_MODEL_CACHE_PATH;
   });
 
   afterEach(async () => {
@@ -37,33 +36,34 @@ describe("Pi extension loader regression", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("loads through discoverAndLoadExtensions and queues a single omniroute provider with refreshModels", async () => {
+  it("loads through discoverAndLoadExtensions and queues one complete Pi-native OmniRoute Provider", async () => {
     const result = await discoverAndLoadExtensions([extensionPath], projectRoot, tempDir);
     assert.equal(result.errors.length, 0, `Pi loader should load index.ts without errors: ${JSON.stringify(result.errors)}`);
 
-    const pending = result.runtime.pendingProviderRegistrations;
-    const omniroute = pending.filter((entry) => entry.name === "omniroute");
-    assert.equal(omniroute.length, 1, "exactly one omniroute provider registration");
-    assert.equal(omniroute[0]?.config.api, "openai-responses");
-    assert.equal(omniroute[0]?.config.apiKey, "$OMNIROUTE_API_KEY");
-    assert.equal(omniroute[0]?.config.baseUrl, BASE_URL);
-    assert.equal(typeof omniroute[0]?.config.refreshModels, "function");
-    assert.equal(
-      omniroute[0]?.config.streamSimple,
-      undefined,
-      "OmniRoute should delegate Responses streaming and reasoning rendering to Pi",
-    );
+    const pending = result.runtime.pendingNativeProviderRegistrations;
+    const omniroute = pending.filter((entry) => entry.provider.id === "omniroute");
+    assert.equal(omniroute.length, 1, "exactly one complete OmniRoute provider registration");
+    const provider = omniroute[0]?.provider;
+    assert.equal(provider?.name, "OmniRoute");
+    assert.equal(provider?.baseUrl, BASE_URL);
+    assert.equal(provider?.auth.apiKey?.name, "OmniRoute API key");
+    assert.equal(typeof provider?.getModels, "function");
+    assert.equal(typeof provider?.refreshModels, "function");
+    assert.equal(typeof provider?.stream, "function");
+    assert.equal(typeof provider?.streamSimple, "function");
   });
 
-  it("skips registration when OMNIROUTE_BASE_URL is missing", async () => {
-    delete process.env.OMNIROUTE_BASE_URL;
-    const result = await discoverAndLoadExtensions([extensionPath], projectRoot, tempDir);
-    assert.equal(result.errors.length, 0, JSON.stringify(result.errors));
-    const pending = result.runtime.pendingProviderRegistrations;
-    assert.equal(
-      pending.filter((entry) => entry.name === "omniroute").length,
-      0,
-      "no provider without base URL",
-    );
+  it("skips registration when OMNIROUTE_BASE_URL is missing or not an HTTP(S) URL", async () => {
+    for (const baseUrl of [undefined, "not a URL", "ftp://omniroute.test/v1"]) {
+      if (baseUrl === undefined) delete process.env.OMNIROUTE_BASE_URL;
+      else process.env.OMNIROUTE_BASE_URL = baseUrl;
+      const result = await discoverAndLoadExtensions([extensionPath], projectRoot, tempDir);
+      assert.equal(result.errors.length, 0, JSON.stringify(result.errors));
+      assert.equal(
+        result.runtime.pendingNativeProviderRegistrations.filter((entry) => entry.provider.id === "omniroute").length,
+        0,
+        `no provider for ${baseUrl ?? "missing"} base URL`,
+      );
+    }
   });
 });

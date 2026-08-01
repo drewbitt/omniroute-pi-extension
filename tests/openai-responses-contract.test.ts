@@ -1,36 +1,8 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, "..");
-const piAgentPackagePath = join(
-  projectRoot,
-  "node_modules",
-  "@earendil-works",
-  "pi-coding-agent",
-);
-const piAgentPackageJson = JSON.parse(
-  await readFile(join(piAgentPackagePath, "package.json"), "utf8"),
-) as { dependencies?: Record<string, string> };
-// npm may hoist @earendil-works/pi-ai next to pi-coding-agent or nest it underneath.
-const nestedPiAiPath = join(piAgentPackagePath, "node_modules", "@earendil-works", "pi-ai");
-const hoistedPiAiPath = join(projectRoot, "node_modules", "@earendil-works", "pi-ai");
-const piAiPackagePath = await readFile(join(nestedPiAiPath, "package.json"), "utf8")
-  .then(() => nestedPiAiPath)
-  .catch(async () => {
-    await readFile(join(hoistedPiAiPath, "package.json"), "utf8");
-    return hoistedPiAiPath;
-  });
-const upstreamPiAiPackageJson = JSON.parse(
-  await readFile(join(piAiPackagePath, "package.json"), "utf8"),
-) as { name?: string; version?: string };
-const { openAIResponsesApi } = await import(
-  pathToFileURL(join(piAiPackagePath, "dist", "api", "openai-responses.lazy.js")).href
-);
+import { openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 
 // Consumer compatibility coverage for the upstream Responses stream bundled with Pi.
 
@@ -159,15 +131,6 @@ after(async () => {
   );
 });
 
-test("uses the upstream Pi-AI dependency bundled with pi-coding-agent", () => {
-  assert.equal(upstreamPiAiPackageJson.name, "@earendil-works/pi-ai");
-  assert.match(upstreamPiAiPackageJson.version ?? "", /^0\.83\./);
-  assert.match(
-    piAgentPackageJson.dependencies?.["@earendil-works/pi-ai"] ?? "",
-    /^\^0\.83\./,
-  );
-});
-
 test("Pi's bundled Responses consumer preserves reasoning and tool-call state across turns", async () => {
   const api = openAIResponsesApi();
   const model = {
@@ -177,7 +140,7 @@ test("Pi's bundled Responses consumer preserves reasoning and tool-call state ac
     api: "openai-responses" as const,
     baseUrl,
     reasoning: true,
-    input: ["text"] as const,
+    input: ["text"] as Array<"text" | "image">,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 372_000,
     maxTokens: 128_000,
