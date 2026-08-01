@@ -29,6 +29,7 @@ interface OmnirouteModel {
     reasoning?: boolean;
     thinking?: boolean;
     vision?: boolean;
+    effort_tiers?: unknown;
   };
   input_modalities?: string[];
   output_modalities?: string[];
@@ -97,12 +98,15 @@ interface RefreshModelsContext {
 }
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-const THINKING_LEVEL_SET = new Set<string>(THINKING_LEVELS);
 const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 const REASONING_EFFORT_SET = new Set<string>(REASONING_EFFORTS);
-const SYNTHETIC_CODEX_ULTRA_ROOTS = new Set(["gpt-5.6-sol-ultra", "gpt-5.6-terra-ultra"]);
-const CODEX_MODEL_PREFIXES = new Set(["cx", "codex"]);
-const DEEPSEEK_THINKING_FAMILY = "deepseek-thinking";
+// Explicit complete alias IDs only — no owned_by/root/prefix heuristics.
+const EXCLUDED_SYNTHETIC_ULTRA_MODEL_IDS = new Set([
+  "codex/gpt-5.6-sol-ultra",
+  "cx/gpt-5.6-sol-ultra",
+  "codex/gpt-5.6-terra-ultra",
+  "cx/gpt-5.6-terra-ultra",
+]);
 
 function isConversationalTextModel(model: OmnirouteModel): boolean {
   const type = typeof model.type === "string" ? model.type.trim().toLowerCase() : "";
@@ -131,7 +135,7 @@ function betterModel(a: OmnirouteModel, b: OmnirouteModel): OmnirouteModel {
   return a;
 }
 
-function normalizeThinkingLevels(efforts: ReasoningEffort[], options?: { xhighValue?: string }) {
+function normalizeThinkingLevels(efforts: ReasoningEffort[]) {
   const has = new Set(efforts);
   return {
     off: null,
@@ -139,7 +143,7 @@ function normalizeThinkingLevels(efforts: ReasoningEffort[], options?: { xhighVa
     low: has.has("low") ? "low" : null,
     medium: has.has("medium") ? "medium" : null,
     high: has.has("high") ? "high" : null,
-    xhigh: has.has("xhigh") ? (options?.xhighValue ?? "xhigh") : null,
+    xhigh: has.has("xhigh") ? "xhigh" : null,
     max: has.has("max") ? "max" : null,
   } satisfies Record<ThinkingLevel, string | null>;
 }
@@ -188,6 +192,10 @@ function getEffortsFromReasoningMetadata(model: ReasoningMetadataModel): Reasoni
   return parseReasoningEfforts(schema?.properties?.reasoningEffort?.enum);
 }
 
+function getPrimaryEffortTiers(model: OmnirouteModel): ReasoningEffort[] {
+  return parseReasoningEfforts(model.capabilities?.effort_tiers);
+}
+
 function normalizeModelToken(value?: string | null) {
   return value?.trim().toLowerCase() || undefined;
 }
@@ -209,12 +217,9 @@ function rootModelKey(model: { id?: string; root?: string }) {
   return normalizeModelToken(model.root) ?? normalizeModelToken(model.id);
 }
 
-function isSyntheticCodexUltraAlias(model: { id: string; root?: string; owned_by?: string }) {
-  const owner = normalizeModelToken(model.owned_by);
-  const prefix = normalizeModelToken(model.id.split("/", 1)[0]);
-  const isCodexModel = owner ? owner === "codex" : CODEX_MODEL_PREFIXES.has(prefix ?? "");
-
-  return isCodexModel && SYNTHETIC_CODEX_ULTRA_ROOTS.has(rootModelKey(model) ?? "");
+function isExcludedSyntheticUltraModelId(id: string) {
+  const normalized = normalizeModelToken(id);
+  return normalized !== undefined && EXCLUDED_SYNTHETIC_ULTRA_MODEL_IDS.has(normalized);
 }
 
 function mergeEffortIntoIndex(index: Map<string, ReasoningEffort[]>, key: string | undefined, efforts: ReasoningEffort[]) {
@@ -264,16 +269,57 @@ function getSupplementalEffortsForModel(model: OmnirouteModel, effortIndex: Supp
   return effortIndex.root.get(rootModelKey(model) ?? "") ?? [];
 }
 
+function hasRecognizedAdjustableStrength(efforts: ReasoningEffort[]): boolean {
+  // `none` is a recognized effort for parsing/folding and maps to Pi off/omission,
+  // but by itself it is not an adjustable strength and must not enable reasoning maps.
+  return efforts.some((effort) => effort !== "none");
+}
+
+/**
+ * Restored ProviderModel snapshots may claim reasoning=true with an absent map or an
+ * all-null/invalid map. Publish reasoning only when the map has at least one valid
+ * non-null adjustable strength for low/medium/high/xhigh/max. Never invent efforts.
+ */
+function hasAdjustableThinkingStrength(map: Record<ThinkingLevel, string | null>): boolean {
+  return ([map.low, map.medium, map.high, map.xhigh, map.max] as Array<string | null>).some(
+    (value) => typeof value === "string" && value.length > 0,
+  );
+}
+
+function sanitizeRestoredReasoning(model: ProviderModel): ProviderModel {
+  const map = model.thinkingLevelMap;
+  if (!model.reasoning) {
+    if (!map) return model;
+    const { thinkingLevelMap: _drop, ...rest } = model;
+    return rest;
+  }
+
+  // reasoning=true requires a strict complete map with at least one non-null adjustable strength.
+  // Incomplete/extra/all-null/invalid maps fail closed: reasoning=false and omit map.
+  if (!map || !isValidThinkingLevelMap(map) || !hasAdjustableThinkingStrength(map)) {
+    const { thinkingLevelMap: _drop, ...rest } = model;
+    return { ...rest, reasoning: false };
+  }
+
+  return {
+    ...model,
+    thinkingLevelMap: sanitizeThinkingLevelMap(map),
+  };
+}
+
 function toProviderModel(model: OmnirouteModel, efforts: ReasoningEffort[]): ProviderModel {
-  const reasoning = Boolean(model.capabilities?.reasoning || model.capabilities?.thinking || efforts.length > 0);
-  const isDeepseekFamily = model.family === DEEPSEEK_THINKING_FAMILY;
-  const thinkingLevelMap = normalizeThinkingLevels(efforts, { xhighValue: isDeepseekFamily ? "max" : undefined });
+  // Adjustable reasoning is true only when the fresh merged set contains at least one
+  // recognized adjustable strength (low/medium/high/xhigh/max). `none` alone is not enough.
+  // Never synthesize tiers from store/legacy cache or from bare reasoning/thinking flags.
+  // Fail closed: reasoning:false and omit thinkingLevelMap (never publish all-null maps).
+  const reasoning = hasRecognizedAdjustableStrength(efforts);
+  const thinkingLevelMap = reasoning ? normalizeThinkingLevels(efforts) : undefined;
 
   return {
     id: model.id,
     name: model.root ?? model.name ?? model.id,
     reasoning,
-    ...(reasoning ? { thinkingLevelMap } : {}),
+    ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
     input: (model.input_modalities?.includes("image") ? ["text", "image"] : ["text"]) as ProviderInput[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: model.context_length ?? model.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW,
@@ -297,7 +343,7 @@ function normalizeModels(rawModels: OmnirouteModel[], effortIndex: SupplementalE
   const deduped = new Map<string, OmnirouteModel>();
   for (const model of rawModels.filter(
     (candidate) =>
-      candidate?.id && isConversationalTextModel(candidate) && !isSyntheticCodexUltraAlias(candidate),
+      candidate?.id && isConversationalTextModel(candidate) && !isExcludedSyntheticUltraModelId(candidate.id),
   )) {
     const current = deduped.get(model.id);
     deduped.set(model.id, current ? betterModel(current, model) : model);
@@ -322,7 +368,7 @@ function normalizeModels(rawModels: OmnirouteModel[], effortIndex: SupplementalE
     if (foldedVariantIds.has(id)) continue;
 
     const efforts = mergeReasoningEfforts(
-      variantEffortsByBase.get(id) ?? [],
+      mergeReasoningEfforts(getPrimaryEffortTiers(model), variantEffortsByBase.get(id) ?? []),
       getSupplementalEffortsForModel(model, effortIndex),
     );
     normalized.push(toProviderModel(model, efforts));
@@ -405,14 +451,50 @@ function isInputList(value: unknown): value is ProviderInput[] {
   return Array.isArray(value) && value.length > 0 && value.every((item) => item === "text" || item === "image");
 }
 
-function isValidThinkingLevelMap(value: unknown): value is Record<ThinkingLevel, string | null> {
-  if (!isRecord(value)) return false;
+/**
+ * Per-key wire values that normalizeThinkingLevels can emit for this plugin's Pi map.
+ * off is always null (Pi off / omit). minimal and low share provider effort "low".
+ * medium/high/xhigh/max map to their own wire efforts or null. Do not accept cross-level
+ * recognized values (e.g. high:"low") or unknown strings; never synthesize or normalize them.
+ */
+const ALLOWED_THINKING_LEVEL_VALUES = {
+  off: new Set<string | null>([null]),
+  minimal: new Set<string | null>([null, "low"]),
+  low: new Set<string | null>([null, "low"]),
+  medium: new Set<string | null>([null, "medium"]),
+  high: new Set<string | null>([null, "high"]),
+  xhigh: new Set<string | null>([null, "xhigh"]),
+  max: new Set<string | null>([null, "max"]),
+} as const satisfies Record<ThinkingLevel, ReadonlySet<string | null>>;
 
-  for (const [key, entry] of Object.entries(value)) {
-    if (!THINKING_LEVEL_SET.has(key)) return false;
+/**
+ * Candidate maps may be incomplete/extra during restore acceptance.
+ * Values must still be string|null so we can fail closed later without inventing keys.
+ * Exact per-level wire constraints are enforced by isValidThinkingLevelMap.
+ */
+function isThinkingLevelMapCandidate(value: unknown): value is Record<string, string | null> {
+  if (!isRecord(value)) return false;
+  for (const entry of Object.values(value)) {
     if (entry !== null && typeof entry !== "string") return false;
   }
+  return true;
+}
 
+/**
+ * Strict restored/published map shape: exactly the full ThinkingLevel key set, no extras,
+ * and each key's value must be one of the exact wire efforts normalizeThinkingLevels emits
+ * for that key (or null). Do not synthesize missing keys or rewrite invalid values.
+ */
+function isValidThinkingLevelMap(value: unknown): value is Record<ThinkingLevel, string | null> {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== THINKING_LEVELS.length) return false;
+  for (const level of THINKING_LEVELS) {
+    if (!Object.prototype.hasOwnProperty.call(value, level)) return false;
+    const entry = value[level];
+    if (entry !== null && typeof entry !== "string") return false;
+    if (!ALLOWED_THINKING_LEVEL_VALUES[level].has(entry)) return false;
+  }
   return true;
 }
 
@@ -425,17 +507,23 @@ function isProviderModel(value: unknown): value is ProviderModel {
   if (!isCost(value.cost)) return false;
   if (!isPositiveNumber(value.contextWindow)) return false;
   if (!isPositiveNumber(value.maxTokens)) return false;
-  if (value.thinkingLevelMap !== undefined && !isValidThinkingLevelMap(value.thinkingLevelMap)) return false;
+  // Accept candidate maps (including incomplete/extra); sanitizeRestoredReasoning fails closed.
+  if (value.thinkingLevelMap !== undefined && !isThinkingLevelMapCandidate(value.thinkingLevelMap)) return false;
   return true;
 }
 
 function sanitizeThinkingLevelMap(map: Record<ThinkingLevel, string | null> | undefined) {
-  if (!map) return undefined;
-  const sanitized = { ...map } as Record<ThinkingLevel, string | null>;
-  for (const level of THINKING_LEVELS) {
-    if (!(level in sanitized)) sanitized[level] = null;
-  }
-  return sanitized;
+  // Never synthesize missing keys. Only pass through strict complete maps.
+  if (!map || !isValidThinkingLevelMap(map)) return undefined;
+  return {
+    off: map.off,
+    minimal: map.minimal,
+    low: map.low,
+    medium: map.medium,
+    high: map.high,
+    xhigh: map.xhigh,
+    max: map.max,
+  };
 }
 
 function toProviderModelConfig(model: ProviderModel): ProviderModelConfig {
@@ -476,13 +564,8 @@ function providerModelsFromStore(models: readonly unknown[] | undefined): Provid
       maxTokens: entry.maxTokens,
     };
     if (!isProviderModel(candidate)) continue;
-    if (isSyntheticCodexUltraAlias({ id: candidate.id, root: candidate.name })) continue;
-    result.push({
-      ...candidate,
-      thinkingLevelMap: candidate.thinkingLevelMap
-        ? sanitizeThinkingLevelMap(candidate.thinkingLevelMap)
-        : undefined,
-    });
+    if (isExcludedSyntheticUltraModelId(candidate.id)) continue;
+    result.push(sanitizeRestoredReasoning(candidate));
   }
   return result;
 }
@@ -534,12 +617,9 @@ function readLegacyCachedModels(baseUrl: string): { models: ProviderModel[]; che
     const models: ProviderModel[] = [];
     for (const entry of parsed.models) {
       if (!isProviderModel(entry)) continue;
-      if (isSyntheticCodexUltraAlias({ id: entry.id, root: entry.name })) continue;
+      if (isExcludedSyntheticUltraModelId(entry.id)) continue;
       if (isObviousNonChatNormalizedModel(entry)) continue;
-      models.push({
-        ...entry,
-        thinkingLevelMap: entry.thinkingLevelMap ? sanitizeThinkingLevelMap(entry.thinkingLevelMap) : undefined,
-      });
+      models.push(sanitizeRestoredReasoning(entry));
     }
     // Preserve legacy freshness; never invent Date.now() for imported catalogs.
     return { models, checkedAt: parseLegacyFetchedAt(parsed.fetchedAt) };
@@ -606,13 +686,91 @@ function throwNormalizedAbort(parent: AbortSignal | undefined, signal: AbortSign
   throw toAbortError();
 }
 
-async function fetchJsonWithTimeout<T>(
+function assertCatalogDataArray(payload: unknown, status: number): unknown[] {
+  // Successful empty catalogs use `{ data: [] }`. Missing or non-array `data` is invalid shape.
+  if (!isRecord(payload) || !Array.isArray(payload.data)) {
+    throw primaryDiscoveryInvalidBodyError(status);
+  }
+  return payload.data;
+}
+
+type CatalogEndpointRole = "primary" | "supplemental";
+
+function isOptionalStringField(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function isOptionalStringArrayField(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.every((item) => typeof item === "string"));
+}
+
+function isOptionalFiniteNumberField(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value));
+}
+
+/**
+ * Generic field shape check: undefined is allowed; when present, value must pass the predicate.
+ * Keeps role validators small and free of repeated optional-branch noise.
+ */
+function fieldWhenPresent(value: unknown, isValid: (present: unknown) => boolean): boolean {
+  return value === undefined || isValid(value);
+}
+
+function isPrimaryCatalogRow(value: unknown): value is OmnirouteModel {
+  if (!isRecord(value)) return false;
+  // Primary rows accepted by normalization require a non-empty string id.
+  if (typeof value.id !== "string" || value.id.length === 0) return false;
+  if (!isOptionalStringField(value.name)) return false;
+  if (!isOptionalStringField(value.root)) return false;
+  if (!isOptionalStringField(value.parent)) return false;
+  if (!isOptionalStringField(value.owned_by)) return false;
+  if (!isOptionalStringField(value.type)) return false;
+  if (!isOptionalStringField(value.family)) return false;
+  // capabilities, when present, must be a record; effort_tiers may be any unknown parsed later.
+  if (!fieldWhenPresent(value.capabilities, isRecord)) return false;
+  if (!isOptionalStringArrayField(value.input_modalities)) return false;
+  if (!isOptionalStringArrayField(value.output_modalities)) return false;
+  if (!isOptionalFiniteNumberField(value.context_length)) return false;
+  if (!isOptionalFiniteNumberField(value.max_output_tokens)) return false;
+  if (!isOptionalFiniteNumberField(value.max_input_tokens)) return false;
+  return true;
+}
+
+function isSupplementalCatalogRow(value: unknown): value is ReasoningMetadataModel {
+  if (!isRecord(value)) return false;
+  // Identity fields used by strict/root matching must be string|null|undefined.
+  if (!isOptionalStringField(value.id)) return false;
+  if (!isOptionalStringField(value.root)) return false;
+  if (!isOptionalStringField(value.parent)) return false;
+  if (!isOptionalStringField(value.owned_by)) return false;
+  // Effort arrays remain unknown and are parsed later. Config schemas, when present, must be
+  // records so nested property access never throws on arrays/primitives.
+  if (!fieldWhenPresent(value.configSchema, isRecord)) return false;
+  if (!fieldWhenPresent(value.configurationSchema, isRecord)) return false;
+  return true;
+}
+
+function assertCatalogRows(data: unknown[], role: CatalogEndpointRole, status: number): void {
+  const isValidRow = role === "primary" ? isPrimaryCatalogRow : isSupplementalCatalogRow;
+  for (const row of data) {
+    if (!isValidRow(row)) {
+      throw primaryDiscoveryInvalidBodyError(status);
+    }
+  }
+}
+
+/**
+ * Fetch one discovery participant JSON body with parent+timeout composition.
+ * Returns role-validated `data` array (may be empty). Never leaks URL/key/body/statusText.
+ */
+async function fetchCatalogDataArray(
   url: string,
   headers: Record<string, string>,
   parent: AbortSignal | undefined,
-  timeoutMs: number,
-): Promise<T> {
-  const { signal, dispose } = createTimeoutSignal(parent, timeoutMs);
+  request: { signal: AbortSignal; dispose: () => void },
+  role: CatalogEndpointRole,
+): Promise<unknown[]> {
+  const { signal, dispose } = request;
   try {
     let response: Response;
     try {
@@ -621,56 +779,32 @@ async function fetchJsonWithTimeout<T>(
       // Timeout/parent abort before headers: Node may surface abort reason as raw Error("timeout").
       if (isAbortError(error)) throw error;
       if (signal.aborted || parent?.aborted) throwNormalizedAbort(parent, signal);
-      throw error;
+      // Network/transport failures must stay sanitized (no undici URL/cause text).
+      throw new Error("Model discovery failed");
     }
     throwIfAborted(parent);
     if (signal.aborted) throw toAbortError();
     if (!response.ok) {
       throw primaryDiscoveryError(response.status);
     }
+    let payload: unknown;
     try {
-      return (await response.json()) as T;
+      payload = await response.json();
     } catch (error) {
       // Abort during body read must remain AbortError (parent or timeout), not a discovery message.
       if (isAbortError(error)) throw error;
       if (signal.aborted || parent?.aborted) throwNormalizedAbort(parent, signal);
       throw primaryDiscoveryInvalidBodyError(response.status);
     }
+    throwIfAborted(parent);
+    if (signal.aborted) throw toAbortError();
+    const data = assertCatalogDataArray(payload, response.status);
+    // Row validation is endpoint-role-aware and fails the participant atomically before
+    // downstream normalize/index logic can throw TypeError or leak raw exceptions.
+    assertCatalogRows(data, role, response.status);
+    return data;
   } finally {
     dispose();
-  }
-}
-
-async function fetchSupplementalEffortIndex(
-  baseUrl: string,
-  headers: Record<string, string>,
-  parent: AbortSignal | undefined,
-  timeoutMs: number,
-  controller: AbortController,
-): Promise<SupplementalEffortIndex> {
-  const onParentAbort = () => {
-    if (!controller.signal.aborted) controller.abort(parent?.reason);
-  };
-  if (parent) {
-    if (parent.aborted) controller.abort(parent.reason);
-    else parent.addEventListener("abort", onParentAbort, { once: true });
-  }
-  const timer = setTimeout(() => {
-    if (!controller.signal.aborted) controller.abort(new Error("timeout"));
-  }, timeoutMs);
-  try {
-    const response = await fetch(deriveSupplementalReasoningMetadataUrl(baseUrl), {
-      headers,
-      signal: controller.signal,
-    });
-    if (!response.ok) return buildSupplementalEffortIndex([]);
-    const payload = (await response.json()) as DataPayload<ReasoningMetadataModel>;
-    return buildSupplementalEffortIndex(Array.isArray(payload.data) ? payload.data : []);
-  } catch {
-    return buildSupplementalEffortIndex([]);
-  } finally {
-    clearTimeout(timer);
-    if (parent) parent.removeEventListener("abort", onParentAbort);
   }
 }
 
@@ -681,63 +815,73 @@ async function discoverAndNormalize(
 ): Promise<ProviderModel[]> {
   const timeoutMs = getDiscoveryTimeoutMs();
   const headers = { Authorization: `${AUTH_HEADER_PREFIX}${apiKey}` };
-  const supplementalController = new AbortController();
 
-  // Start both requests before awaiting either, so supplemental can race independently.
-  const primaryPromise = fetchJsonWithTimeout<DataPayload<OmnirouteModel>>(
+  // Both participants of the current-gateway snapshot start concurrently with independent
+  // timeouts composed with Pi's parent abort signal. Either failure cancels the sibling
+  // immediately; only dual success publishes an atomic fresh snapshot.
+  const primaryRequest = createTimeoutSignal(parent, timeoutMs);
+  const supplementalRequest = createTimeoutSignal(parent, timeoutMs);
+
+  const cancelSibling = (target: { controller: AbortController; signal: AbortSignal }) => {
+    if (!target.signal.aborted) target.controller.abort();
+  };
+
+  // Attach failure→sibling-cancel handlers immediately so a late sibling rejection cannot race
+  // into an unhandledRejection after the first failure is observed.
+  const primaryPromise = fetchCatalogDataArray(
     `${baseUrl}/models?prefix=alias`,
     headers,
     parent,
-    timeoutMs,
+    primaryRequest,
+    "primary",
+  ).then(
+    (value) => value,
+    (error: unknown) => {
+      cancelSibling(supplementalRequest);
+      throw error;
+    },
   );
 
-  let supplementalSettled = false;
-  let supplementalIndex = buildSupplementalEffortIndex([]);
-  const supplementalPromise = fetchSupplementalEffortIndex(
-    baseUrl,
+  const supplementalPromise = fetchCatalogDataArray(
+    deriveSupplementalReasoningMetadataUrl(baseUrl),
     headers,
     parent,
-    timeoutMs,
-    supplementalController,
+    supplementalRequest,
+    "supplemental",
   ).then(
-    (index) => {
-      supplementalSettled = true;
-      supplementalIndex = index;
-      return index;
-    },
-    () => {
-      supplementalSettled = true;
-      supplementalIndex = buildSupplementalEffortIndex([]);
-      return supplementalIndex;
+    (value) => value,
+    (error: unknown) => {
+      cancelSibling(primaryRequest);
+      throw error;
     },
   );
 
-  // Keep the race alive without making primary wait on it.
-  void supplementalPromise.catch(() => undefined);
+  const [primarySettled, supplementalSettled] = await Promise.allSettled([
+    primaryPromise,
+    supplementalPromise,
+  ]);
 
-  let payload: DataPayload<OmnirouteModel>;
-  try {
-    payload = await primaryPromise;
-  } catch (error) {
-    if (!supplementalController.signal.aborted) supplementalController.abort();
-    throwIfAborted(parent);
-    throw error;
-  }
-
+  // Parent abort stays strict AbortError and never becomes a discovery HTTP message.
   throwIfAborted(parent);
 
-  if (!supplementalSettled) {
-    if (!supplementalController.signal.aborted) supplementalController.abort();
+  if (primarySettled.status === "fulfilled" && supplementalSettled.status === "fulfilled") {
+    // Both participants succeeded (including valid empty `{ data: [] }`). Fresh union only.
+    const effortIndex = buildSupplementalEffortIndex(
+      supplementalSettled.value as ReasoningMetadataModel[],
+    );
+    return normalizeModels(primarySettled.value as OmnirouteModel[], effortIndex);
   }
 
-  // One short yield so an already-completed supplemental then() can mark settled.
-  if (!supplementalSettled) {
-    await Promise.race([supplementalPromise, Promise.resolve()]);
-  }
+  const reasons = [primarySettled, supplementalSettled]
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
 
-  const effortIndex = supplementalSettled ? supplementalIndex : buildSupplementalEffortIndex([]);
-  const rawModels = Array.isArray(payload.data) ? payload.data : [];
-  return normalizeModels(rawModels, effortIndex);
+  // Prefer a real sanitized discovery failure over AbortError produced by sibling cancel.
+  // Child/parent-independent timeout remains sanitized AbortError with no timeout reason leak.
+  const discoveryError = reasons.find((reason) => !isAbortError(reason));
+  if (discoveryError instanceof Error) throw discoveryError;
+  if (discoveryError !== undefined) throw new Error("Model discovery failed");
+  throw toAbortError();
 }
 
 function isFresh(checkedAt: number | undefined, force: boolean | undefined) {
@@ -782,6 +926,10 @@ async function refreshModels(baseUrl: string, context: RefreshModelsContext): Pr
 
   let models = providerModelsFromStore(stored?.models);
   let checkedAt = stored?.checkedAt;
+  // Stage legacy import in memory only. Persist only when returning without online discovery
+  // (fresh cache, offline, or missing API key). A failed attempted online refresh must leave
+  // the store untouched (zero writes), while successful dual discovery writes only the fresh snapshot.
+  let stagedLegacyImport = false;
 
   // One-time legacy catalog import into Pi's provider-scoped store (file kept for downgrade).
   if (models.length === 0) {
@@ -790,27 +938,34 @@ async function refreshModels(baseUrl: string, context: RefreshModelsContext): Pr
       models = legacy.models;
       // Prefer authentic legacy timestamp so stale catalogs revalidate immediately online.
       checkedAt = legacy.checkedAt;
-      throwIfAborted(context.signal);
-      await context.store.write({
-        models: models.map((model) => storeModelFromConfig(toProviderModelConfig(model), baseUrl)),
-        ...(checkedAt !== undefined ? { checkedAt } : {}),
-      });
-      stored = { models, checkedAt };
+      stagedLegacyImport = true;
     }
   }
 
   throwIfAborted(context.signal);
 
+  const persistStagedLegacyImport = async () => {
+    if (!stagedLegacyImport) return;
+    throwIfAborted(context.signal);
+    await context.store.write({
+      models: models.map((model) => storeModelFromConfig(toProviderModelConfig(model), baseUrl)),
+      ...(checkedAt !== undefined ? { checkedAt } : {}),
+    });
+  };
+
   if (models.length > 0 && isFresh(checkedAt, context.force)) {
+    await persistStagedLegacyImport();
     return models.map(toProviderModelConfig);
   }
 
   if (!context.allowNetwork) {
+    await persistStagedLegacyImport();
     return models.map(toProviderModelConfig);
   }
 
   const apiKey = resolveApiKey(context);
   if (!apiKey) {
+    await persistStagedLegacyImport();
     return models.map(toProviderModelConfig);
   }
 
@@ -819,10 +974,9 @@ async function refreshModels(baseUrl: string, context: RefreshModelsContext): Pr
   const discovered = await discoverAndNormalize(baseUrl, apiKey, context.signal);
   throwIfAborted(context.signal);
 
-  if (discovered.length === 0) {
-    return models.map(toProviderModelConfig);
-  }
-
+  // Successful dual discovery is an atomic current-gateway snapshot, including empty.
+  // Never fall back to stale stored/legacy models after a successful empty normalize.
+  // Online success writes only this fresh snapshot once (staged legacy is discarded).
   const nextCheckedAt = Date.now();
   await context.store.write({
     models: discovered.map((model) => storeModelFromConfig(toProviderModelConfig(model), baseUrl)),

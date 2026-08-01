@@ -2,7 +2,7 @@
 
 ## Goal
 
-Keep OmniRoute's standard `/models` response as the source of truth for model IDs and model metadata. Continue using `/api/v1/vscode/_/models` only as supplemental reasoning-effort metadata. Fold known reasoning variants into a verified real base model without inventing model IDs or conflating distinct effort levels.
+Keep OmniRoute's standard `/models?prefix=alias` response as the sole authority for model IDs and model metadata. Use `/api/v1/vscode/_/models` as supplemental reasoning-effort metadata only. Fold known reasoning variants into a verified real base model without inventing model IDs or conflating distinct effort levels.
 
 ## Effort model
 
@@ -18,10 +18,20 @@ A suffixed primary model folds only when its exact suffix-stripped base is prese
 
 The selected base entry remains authoritative for display name, context limits, modalities, and other model metadata. Variant entries contribute only their reasoning effort.
 
-## Supplemental metadata
+## Supplemental metadata (mandatory atomic participant)
 
-The VS Code endpoint may add supported efforts to a primary model found through strict ID keys or an unambiguous root key. It never creates a provider model, replaces a primary ID, or supplies primary model metadata.
+The VS Code endpoint is a **mandatory participant** of the same atomic current-gateway snapshot as primary discovery. Both endpoints start concurrently with independent timeouts composed with Pi's parent abort signal.
+
+**Matching order (exact as code):** for each primary model, first merge efforts from normalized strict keys built from supplemental `id`, `root`, and `parent`. Only when that primary model has no strict match, apply root fallback if that root (primary `root`, else `id`) appears exactly once among supplemental metadata rows that contribute efforts. Multi-row roots never fall back.
+
+Supplemental metadata may only add recognized efforts for models already present in the primary catalog. It never creates a provider model, replaces a primary ID, or supplies primary model metadata. Primary remains the sole model authority.
+
+**Success/failure semantics for both endpoints:**
+
+- Dual success (including valid empty `{ data: [] }` from either) produces one fresh union and one atomic store write.
+- Any network error, non-2xx, invalid JSON, invalid catalog/row shape, endpoint timeout, or parent abort fails that participant, cancels the sibling immediately, and writes/publishes nothing.
+- There is no optional/non-fatal supplemental path and no stale/new merge.
 
 ## Tests
 
-Regression coverage verifies independent `xhigh` and `max`, `none` to `off`, exact-base folding within the alias catalog, retention of suffix models with no real base, retention of unknown future suffixes, and the supplemental endpoint's metadata-only role.
+Regression coverage verifies independent `xhigh` and `max`, `none` to `off`, exact-base folding within the alias catalog, retention of suffix models with no real base, retention of unknown future suffixes, dual-participant atomic success/failure, and the supplemental endpoint's metadata-only role.

@@ -14,15 +14,14 @@ Requires Pi coding-agent APIs available in upstream `@earendil-works/pi-coding-a
 
 - Reads `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`.
 - Registers `omniroute` once with Pi's built-in `openai-responses` API and a public `refreshModels(context)` implementation.
-- Restores the catalog from Pi's provider-scoped model store (`omniroute` in `models-store.json`); the extension evaluates four-hour `checkedAt` freshness and refresh behavior.
-- On first upgrade with an empty matching store, imports a valid legacy OmniRoute cache for the current base URL without copying secrets, and keeps the per-URL legacy file for downgrade (not rewritten).
-- If the store holds models from a different base URL (or missing/malformed stored `baseUrl`), deletes that store entry immediately and never serves those IDs; current-URL legacy import or online discovery may repopulate.
-- Ordinary refresh reuses a store fresher than four hours; `force` (including `pi update --models`) bypasses freshness and still hits the network when allowed.
-- Fetches the primary alias catalog and optional supplemental reasoning metadata concurrently with independent timeouts composed with Pi's abort signal. Supplemental timeout/abort/failure is silent and never blocks primary success.
-- Parent cancellation publishes no partial catalog and writes no store entry.
-- Primary discovery failures reject through Pi (no `console.warn`, no configured URL/key in error text).
-- Keeps conversational text models only (excludes embedding/image/video/audio and non-text output), while preserving suffix folding and synthetic Codex ultra alias filtering.
-- Stays available to ordinary subagent and headless/SDK child sessions: once registered into Pi's `modelRuntime` and restored from the provider model store, OmniRoute resolves without TUI or session lifecycle hooks. Default pi-subagents workers pass the parent's `modelRuntime` and load extensions; intentional `extensions: false` / isolated agents are out of scope for this guarantee.
+- Restores the catalog from Pi's provider-scoped model store (`omniroute` in `models-store.json`) and revalidates on a four-hour freshness window, with `force` (including `pi update --models`) bypassing freshness when network is allowed.
+- On first upgrade with an empty matching store, can stage a valid legacy OmniRoute cache for the current base URL without copying secrets, and keeps the per-URL legacy file for downgrade (not rewritten).
+- Isolates catalogs per base URL: store entries from a different or malformed URL are deleted and never served.
+- Discovers models from the primary alias catalog and supplemental VS Code metadata as one atomic current-gateway snapshot. Either participant failure cancels the sibling and rejects without writing a partial catalog; dual success publishes one fresh snapshot only.
+- Keeps conversational text models only (excludes embedding/image/video/audio and non-text output), folds verified reasoning suffixes into exact bases, and filters a fixed set of synthetic Codex ultra alias IDs. Reasoning efforts come from primary tiers, verified suffixes, and matched supplemental metadata; `ultra` is never treated as a Pi effort.
+- Stays available to ordinary subagent and headless/SDK child sessions once registered into Pi's `modelRuntime` and restored from the provider model store. Default pi-subagents workers pass the parent's `modelRuntime` and load extensions; intentional `extensions: false` / isolated agents are out of scope for this guarantee.
+
+Exact atomic refresh, error sanitization, supplemental matching, reasoning fail-closed rules, and cache/store contracts live in [`docs/features.md`](docs/features.md) and [`docs/adr/0001-discover-reasoning-effort-metadata.md`](docs/adr/0001-discover-reasoning-effort-metadata.md).
 
 ## Configuration
 

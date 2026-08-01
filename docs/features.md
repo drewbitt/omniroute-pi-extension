@@ -17,20 +17,26 @@ This document records the runtime features and invariants implemented by the Omn
 - Stored dynamic model rows include `baseUrl` (written by discovery/import).
 - **URL changes**: Before projecting or stamping freshness, if a non-empty store has missing/malformed `baseUrl` or any row whose normalized base URL (trailing slash ignored) differs from the current `OMNIROUTE_BASE_URL`, the extension immediately calls `context.store.delete()` and treats the catalog as empty. It never serves IDs learned from another URL, even if a later refresh fails offline or without credentials.
 - After a URL-switch delete, a current-URL-matching legacy schemaVersion=2 cache may still import once; otherwise offline/unavailable remains empty. Online discovery writes only the current URL catalog atomically.
-- On first upgraded run (empty matching store), a valid legacy schemaVersion=2 OmniRoute cache matching the configured base URL is imported into the Pi store without copying secrets.
+- On first upgraded run (empty matching store), a valid legacy schemaVersion=2 OmniRoute cache matching the configured base URL is staged in memory without copying secrets. Persist that import only when returning without online discovery (fresh legacy timestamp, `allowNetwork: false`, or no API key). If online dual discovery is attempted and either participant fails, write nothing to the store; the legacy file remains for a later attempt. Successful dual discovery writes only the fresh gateway snapshot once and does not also persist the staged legacy catalog.
 - The legacy per-URL cache file is retained for downgrade compatibility and is not rewritten or deleted by discovery.
 - **Expiry**: ordinary refreshes reuse a stored catalog when `checkedAt` is within four hours; older catalogs revalidate when network is allowed.
 - **Forced refresh**: Pi-native `context.force` bypasses the four-hour window (`pi update --models` invokes force) and still hits the network when allowed.
 
 ## Discovery refresh
 
-- Primary request: `GET {baseUrl}/models?prefix=alias`.
-- Optional supplemental reasoning metadata is fetched concurrently from the derived `/api/v1/vscode/_/models` URL.
+- Primary request: `GET {baseUrl}/models?prefix=alias`. This is the sole authority for model existence, IDs, visibility, limits, modalities, and core capabilities, including primary `capabilities.effort_tiers`.
+- Supplemental grouped VS Code metadata is fetched concurrently from the derived `/api/v1/vscode/_/models` URL and may only add recognized effort levels for models already present in the primary catalog. It is a **mandatory atomic participant**, not optional/non-fatal.
+- **Supplemental matching priority** (matches code): for each primary model, first merge efforts keyed by normalized strict keys from supplemental `id`, `root`, and `parent`. Only when that primary model has no strict match, use root fallback: the primary model's root (or id if root is absent) if that root appears **exactly once** among supplemental metadata rows that contribute efforts. Ambiguous multi-row roots never fall back.
 - Each request uses an independent timeout (`OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS`, default 15s) composed with Pi's parent `context.signal`.
-- Supplemental timeout/abort/failure is silent: it never delays, invalidates, or warns after primary success. Metadata is used only if already settled when primary is ready; otherwise the request is cancelled/ignored and normalization proceeds from alias suffixes alone.
-- Parent abort before a successful write yields no partial return and no store write.
-- Primary HTTP failures and successful responses with undecodable bodies reject with a sanitized fixed-category message such as `Model discovery failed with HTTP <status>` or `Model discovery failed with HTTP <status>: invalid response body` (no statusText, URL, API key, Authorization header, exception message, or response body). The extension does not `console.warn` discovery failures.
-- Empty discovery results leave any previously stored catalog in place.
+- Both requests start concurrently as the two required participants of one current-gateway snapshot. **All failure classes cancel the sibling immediately and write/publish nothing.** Failure class distinction:
+  - Network errors, non-2xx HTTP, invalid JSON, invalid catalog envelope (`data` missing or not an array), or invalid endpoint-role row shapes (primary: non-empty string `id` plus safe types for consumed identity/modality/limit/capabilities fields; supplemental: every row a record with safe identity types and non-throwing nested config shape) => sanitized fixed-category `Error` (for example `Model discovery failed with HTTP <status>` or `...: invalid response body`; no statusText, URL, API key, Authorization header, exception message, or response body). Any invalid row fails that participant atomically, cancels the sibling, and writes nothing.
+  - Endpoint/child timeout (parent-independent) and parent abort => sanitized `AbortError` (no timeout reason leak).
+  - Successful JSON `{ data: [] }` from either participant is valid, not failure.
+- Successful dual-participant refresh writes an atomic snapshot of the current gateway merge only. Never carry forward or merge per-model metadata from an older Provider Model Store or legacy cache into a fresh snapshot.
+- Effort data is the union of primary `capabilities.effort_tiers`, verified primary suffix variants (`none`/`low`/`medium`/`high`/`xhigh`/`max` only when the exact base ID is present), and matched supplemental metadata. `ultra` is not a Pi effort and is never mapped to `max`. `none` remains parseable/foldable and maps to Pi off/omission, but alone it is not an adjustable strength and must not set `reasoning: true` or produce an all-null map. Adjustable reasoning is true only when the fresh set contains at least one recognized adjustable strength (`low`/`medium`/`high`/`xhigh`/`max`). If primary marks reasoning/thinking true (or explicit non-reasoning) but no such adjustable strength is available from the three fresh sources (including none-only), fail closed: `reasoning: false` and omit `thinkingLevelMap` (never publish all-null maps); the model remains in the catalog with fresh base metadata.
+- `thinkingLevelMap` is not free-form `string|null` values. Fresh generation and store/legacy restore both require the exact complete Pi key set with per-level wire efforts only: `off: null`; `minimal`/`low`: `null` or `'low'`; `medium`: `null` or `'medium'`; `high`: `null` or `'high'`; `xhigh`: `null` or `'xhigh'`; `max`: `null` or `'max'`. Incomplete/extra maps, unknown strings, wrong-level recognized values (e.g. `high: 'low'`), and all-null maps fail closed on restore (`reasoning: false`, map omitted). Do not synthesize or rewrite invalid values.
+- Parent abort or either participant's discovery failure before a successful dual write yields no partial return and no store write (including no deferred legacy-import write when discovery was attempted after an empty matching store). Sibling cancel must not leave unhandled rejection races. The extension does not `console.warn` discovery failures.
+- When both participants succeed and the normalized Pi catalog is empty, that is still a valid current snapshot: atomically write `{ models: [], checkedAt }` and return `[]`. Never fall back to stale stored or legacy models after successful empty discovery.
 
 ## Conversational model boundary
 
@@ -39,7 +45,7 @@ This document records the runtime features and invariants implemented by the Omn
   - exclude known non-chat types `embedding`, `image`, `video`, `audio`;
   - filter non-chat rows individually before deduplication so a valid conversational row survives when a non-chat duplicate reuses the same id;
   - require text output when `output_modalities` is declared.
-- Synthetic Codex ultra aliases remain hidden; verified reasoning-effort suffix variants still fold into the base model.
+- Explicitly exclude only complete normalized alias IDs `codex/gpt-5.6-sol-ultra`, `cx/gpt-5.6-sol-ultra`, `codex/gpt-5.6-terra-ultra`, and `cx/gpt-5.6-terra-ultra`. No `owned_by`/root/prefix heuristics. Same-root different-provider IDs remain. `ultra` is ignored as an effort tier.
 
 ## Configuration
 
