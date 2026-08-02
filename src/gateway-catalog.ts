@@ -1,7 +1,5 @@
 import type { RefreshModelsContext } from "@earendil-works/pi-ai/compat";
 
-const DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS = 60_000;
-
 type CatalogRole = "primary" | "supplemental";
 
 export type OmniRouteConfig = {
@@ -44,9 +42,9 @@ export async function fetchCatalogs(
   if (!apiKey) throw new Error("Model discovery failed");
 
   const headers = { Authorization: `Bearer ${apiKey}` };
-  const primary = timeoutSignal(context.signal, getDiscoveryTimeoutMs());
-  const supplemental = timeoutSignal(context.signal, getDiscoveryTimeoutMs());
-  const cancel = (request: ReturnType<typeof timeoutSignal>) => {
+  const primary = linkedRequestSignal(context.signal);
+  const supplemental = linkedRequestSignal(context.signal);
+  const cancel = (request: ReturnType<typeof linkedRequestSignal>) => {
     if (!request.signal.aborted) request.controller.abort();
   };
   const primaryResult = fetchCatalog(`${config.baseUrl}/models?prefix=alias`, "primary", context.signal, primary, headers).catch((error) => {
@@ -67,11 +65,6 @@ export async function fetchCatalogs(
   if (failure instanceof Error) throw failure;
   if (failure !== undefined) throw new Error("Model discovery failed");
   throw abortError();
-}
-
-function getDiscoveryTimeoutMs() {
-  const value = Number(process.env.OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS);
-  return Number.isFinite(value) && value > 0 ? value : DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS;
 }
 
 function supplementalUrl(baseUrl: string) {
@@ -134,17 +127,15 @@ function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError";
 }
 
-function timeoutSignal(parent: AbortSignal | undefined, timeoutMs: number) {
+function linkedRequestSignal(parent: AbortSignal | undefined) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (parent?.aborted) controller.abort();
   else parent?.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   return {
     controller,
     signal: controller.signal,
     dispose() {
-      clearTimeout(timer);
       parent?.removeEventListener("abort", abort);
     },
   };
@@ -154,7 +145,7 @@ async function fetchCatalog(
   url: string,
   role: CatalogRole,
   parent: AbortSignal | undefined,
-  request: ReturnType<typeof timeoutSignal>,
+  request: ReturnType<typeof linkedRequestSignal>,
   headers: Record<string, string>,
 ): Promise<unknown[]> {
   try {

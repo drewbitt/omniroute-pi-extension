@@ -520,21 +520,19 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     }
   });
 
-  it("uses a sanitized AbortError for a participant timeout and cancels its sibling", async () => {
+  it("does not impose a plugin-owned discovery timeout; only Pi's parent signal is the deadline", async () => {
+    // Legacy env must have no runtime effect after timeout removal.
     process.env.OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS = "25";
     const server = await createFixtureServer({
-      primary: { hold: true, body: data([primaryRow("timeout")]) },
-      supplemental: { hold: true, body: data([]) },
+      primary: { delayMs: 80, body: data([primaryRow("slow-but-ok")]) },
+      supplemental: { delayMs: 80, body: data([]) },
     });
     servers.push(server);
+    const store = new InMemoryModelsStore();
     const provider = captureProvider(server.baseUrl);
-    await assert.rejects(provider.refreshModels!(refreshContext(new InMemoryModelsStore())), (error) => {
-      assert.ok(error instanceof Error);
-      assert.equal(error.name, "AbortError");
-      assert.doesNotMatch(error.message, /timeout|127\.0\.0\.1/i);
-      return true;
-    });
-    await server.waitFor(() => server.primaryAborts === 1 && server.supplementalAborts === 1, "timeout must cancel both requests");
+    await provider.refreshModels!(refreshContext(store));
+    assert.deepEqual(provider.getModels().map((model) => model.id), ["slow-but-ok"]);
+    assert.deepEqual((await store.read("omniroute"))?.models.map((model) => model.id), ["slow-but-ok"]);
   });
 
   it("honors parent abort strictly without a store write", async () => {

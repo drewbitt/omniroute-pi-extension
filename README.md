@@ -28,7 +28,6 @@ The exact gateway contracts are documented in [`docs/features.md`](docs/features
 | --- | --- |
 | `OMNIROUTE_BASE_URL` | Required OmniRoute base URL; trailing slashes are normalized. |
 | `OMNIROUTE_API_KEY` | Pi's environment fallback for the OmniRoute credential lifecycle. |
-| `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` | Per-participant discovery timeout in milliseconds (default: 60000). |
 
 There is no extension-owned cache path, freshness interval, legacy cache import, base-URL store isolation, or offline-mode branch. Pi supplies `allowNetwork`, persistence, restoration, and fallback through the public provider API.
 

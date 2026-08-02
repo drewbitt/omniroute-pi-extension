@@ -20,7 +20,7 @@ The selected base entry remains authoritative for display name, context limits, 
 
 ## Supplemental metadata (mandatory atomic participant)
 
-The VS Code endpoint is a **mandatory participant** of the same atomic current-gateway snapshot as primary discovery. Both endpoints start concurrently with independent timeouts composed with Pi's parent abort signal.
+The VS Code endpoint is a **mandatory participant** of the same atomic current-gateway snapshot as primary discovery. Both endpoints start concurrently and cancel only via Pi's parent abort signal or sibling failure; the plugin does not impose its own elapsed-time discovery deadline.
 
 **Matching order (exact as code):** for each primary model, first merge efforts from normalized strict keys built from supplemental `id`, `root`, and `parent`. Only when that primary model has no strict match, apply root fallback if that root (primary `root`, else `id`) appears exactly once among supplemental metadata rows that contribute efforts. Multi-row roots never fall back.
 
@@ -29,7 +29,7 @@ Supplemental metadata may only add recognized efforts for models already present
 **Success/failure semantics for both endpoints:**
 
 - Dual success (including valid empty `{ data: [] }` from either) produces one fresh union and one atomic store write.
-- Any network error, non-2xx, invalid JSON, invalid catalog/row shape, endpoint timeout, or parent abort fails that participant, cancels the sibling immediately, and writes/publishes nothing.
+- Any network error, non-2xx, invalid JSON, invalid catalog/row shape, or parent abort fails that participant, cancels the sibling immediately, and writes/publishes nothing.
 - There is no optional/non-fatal supplemental path and no stale/new merge.
 
 ## Tests

@@ -28,10 +28,10 @@ The extension does **not** implement its own cache files, TTL/four-hour freshnes
 
 - Primary request: `GET {baseUrl}/models?prefix=alias`; it solely owns model IDs, visibility, modalities, context limits, output limits, and primary `capabilities.effort_tiers`.
 - Derived grouped VS Code metadata request: `/api/v1/vscode/_/models`; it may contribute recognized reasoning effort only.
-- Both requests start concurrently and are mandatory participants. A network error, timeout, non-2xx response, invalid JSON/envelope/row aborts the sibling and rejects. No partial fresh list is returned.
+- Both requests start concurrently and are mandatory participants. A network error, non-2xx response, invalid JSON/envelope/row aborts the sibling and rejects. No partial fresh list is returned.
 - Both endpoints accept `{ "data": [] }`; dual empty success is a valid empty fresh snapshot.
-- Per-request timeout uses `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` (default 60 seconds), composed with Pi's parent `RefreshModelsContext.signal`.
-- Errors are fixed-category and sanitized: no URL, status text, response body, Authorization header, credential, or parser/transport detail is exposed. Parent abort and participant timeout use `AbortError`.
+- External cancellation and deadlines come only from Pi's parent `RefreshModelsContext.signal`; endpoint failure aborts the sibling through its linked request controller. The plugin does not impose its own elapsed-time discovery deadline.
+- Errors are fixed-category and sanitized: no URL, status text, response body, Authorization header, credential, or parser/transport detail is exposed. Parent abort uses sanitized `AbortError`.
 
 ## Model and reasoning normalization
 
@@ -54,4 +54,3 @@ The extension does **not** implement its own cache files, TTL/four-hour freshnes
 | --- | --- |
 | `OMNIROUTE_BASE_URL` | Required OmniRoute endpoint. |
 | `OMNIROUTE_API_KEY` | Public Pi env credential fallback. |
-| `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` | Discovery timeout per required participant. |
