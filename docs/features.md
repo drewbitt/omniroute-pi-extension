@@ -30,7 +30,7 @@ The extension does **not** implement its own cache files, TTL/four-hour freshnes
 - Derived grouped VS Code metadata request: `/api/v1/vscode/_/models`; it may contribute recognized reasoning effort only.
 - Both requests start concurrently and are mandatory participants. A network error, timeout, non-2xx response, invalid JSON/envelope/row aborts the sibling and rejects. No partial fresh list is returned.
 - Both endpoints accept `{ "data": [] }`; dual empty success is a valid empty fresh snapshot.
-- Per-request timeout uses `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` (default 15 seconds), composed with Pi's parent `RefreshModelsContext.signal`.
+- Per-request timeout uses `OMNIROUTE_MODEL_DISCOVERY_TIMEOUT_MS` (default 60 seconds), composed with Pi's parent `RefreshModelsContext.signal`.
 - Errors are fixed-category and sanitized: no URL, status text, response body, Authorization header, credential, or parser/transport detail is exposed. Parent abort and participant timeout use `AbortError`.
 
 ## Model and reasoning normalization

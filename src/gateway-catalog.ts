@@ -1,6 +1,6 @@
 import type { RefreshModelsContext } from "@earendil-works/pi-ai/compat";
 
-const DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+const DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS = 60_000;
 
 type CatalogRole = "primary" | "supplemental";
 
