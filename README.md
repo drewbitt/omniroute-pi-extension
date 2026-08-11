@@ -15,8 +15,8 @@ Requires Pi 0.83-compatible public `@earendil-works/pi-ai` and `@earendil-works/
 - Activates only when `OMNIROUTE_BASE_URL` is valid and non-empty.
 - Registers one complete public Pi provider with `createProvider`, `envApiKeyAuth("OmniRoute API key", ["OMNIROUTE_API_KEY"])`, and `openAIResponsesApi()` from Pi's public compatibility entrypoint.
 - Leaves credential resolution, store restore/write, refresh scheduling, in-flight refresh de-duplication, and offline fallback to Pi's provider lifecycle.
-- Fetches the primary alias catalog and grouped VS Code reasoning metadata concurrently as required atomic participants. Either failure cancels the other and returns a sanitized error; dual success—including empty arrays—publishes one fresh model list.
-- Uses primary rows for model IDs and base metadata. Reasoning effort is the union of primary effort tiers, verified exact-base suffix variants, and matched supplemental metadata. Unknown effort values (including `ultra`) are ignored; no adjustable effort and `none` alone fail closed.
+- Fetches configured public alias routes from the primary catalog and grouped VS Code reasoning metadata concurrently as required atomic participants. Either failure cancels the other and returns a sanitized error; dual success—including empty arrays—publishes one fresh model list.
+- Uses primary rows for model IDs, friendly display names, and base metadata. Reasoning effort is the union of primary effort tiers, verified exact-base suffix variants, and matched supplemental metadata. Unknown effort values (including `ultra`) are ignored; no adjustable effort and `none` alone fail closed.
 - Keeps conversational text models, de-duplicates them, and excludes only the four accepted synthetic `codex`/`cx` ultra aliases.
 - Remains available to ordinary shared-modelRuntime subagents and headless services through Pi's provider store and public lifecycle.
 

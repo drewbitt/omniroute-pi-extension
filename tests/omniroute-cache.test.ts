@@ -28,6 +28,7 @@ interface FixtureServer {
   readonly supplementalRequests: number;
   readonly primaryAborts: number;
   readonly supplementalAborts: number;
+  readonly primarySearch: string;
   release(kind: CatalogKind): void;
   set(kind: CatalogKind, options: CatalogOptions): void;
   waitFor(predicate: () => boolean, message: string): Promise<void>;
@@ -77,6 +78,7 @@ async function createFixtureServer(options: {
   };
   const requests: Record<CatalogKind, number> = { primary: 0, supplemental: 0 };
   const aborts: Record<CatalogKind, number> = { primary: 0, supplemental: 0 };
+  let primarySearch = "";
   const held: Record<CatalogKind, Array<() => void>> = { primary: [], supplemental: [] };
   const waiters: Array<() => void> = [];
   const notify = () => waiters.splice(0).forEach((wake) => wake());
@@ -94,6 +96,7 @@ async function createFixtureServer(options: {
     }
 
     requests[kind] += 1;
+    if (kind === "primary") primarySearch = url.search;
     notify();
     let settled = false;
     const markAborted = () => {
@@ -139,6 +142,9 @@ async function createFixtureServer(options: {
     },
     get supplementalAborts() {
       return aborts.supplemental;
+    },
+    get primarySearch() {
+      return primarySearch;
     },
     release(kind) {
       config[kind].hold = false;
@@ -297,6 +303,29 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     await Promise.all([first, second]);
     assert.equal(server.primaryRequests, 1);
     assert.equal(server.supplementalRequests, 1);
+  });
+
+  it("requests configured alias routes and prefers a distinct friendly name", async () => {
+    const server = await createFixtureServer({
+      primary: {
+        body: data([
+          primaryRow("cx/gpt-5.6-luna", { name: "  GPT-5.6 Luna  ", root: "gpt-5.6-luna" }),
+          primaryRow("cx/root-fallback", { name: "  cx/root-fallback  ", root: "root-fallback" }),
+          primaryRow("cx/blank-name", { name: "   ", root: "blank-name" }),
+          primaryRow("cx/id-fallback", { name: null, root: null }),
+        ]),
+      },
+      supplemental: { body: data([]) },
+    });
+    servers.push(server);
+    const provider = captureProvider(server.baseUrl);
+    await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+    assert.equal(server.primarySearch, "?prefix=alias&configuredOnly=true");
+    assert.equal(getModel(provider, "cx/gpt-5.6-luna").name, "GPT-5.6 Luna");
+    assert.equal(getModel(provider, "cx/root-fallback").name, "root-fallback");
+    assert.equal(getModel(provider, "cx/blank-name").name, "blank-name");
+    assert.equal(getModel(provider, "cx/id-fallback").name, "cx/id-fallback");
   });
 
   it("atomically merges primary tiers, exact-base suffixes, and strict supplemental matches", async () => {

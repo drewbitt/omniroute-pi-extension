@@ -161,7 +161,7 @@ function toModel(providerId: string, baseUrl: string, model: OmniRouteModel, eff
   const map = thinkingLevelMap(efforts);
   return {
     id: model.id,
-    name: model.root ?? model.name ?? model.id,
+    name: model.name?.trim() && model.name.trim() !== model.id ? model.name.trim() : (model.root ?? model.id),
     provider: providerId,
     api: "openai-responses",
     baseUrl,

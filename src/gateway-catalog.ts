@@ -47,7 +47,7 @@ export async function fetchCatalogs(
   const cancel = (request: ReturnType<typeof linkedRequestSignal>) => {
     if (!request.signal.aborted) request.controller.abort();
   };
-  const primaryResult = fetchCatalog(`${config.baseUrl}/models?prefix=alias`, "primary", context.signal, primary, headers).catch((error) => {
+  const primaryResult = fetchCatalog(`${config.baseUrl}/models?prefix=alias&configuredOnly=true`, "primary", context.signal, primary, headers).catch((error) => {
     cancel(supplemental);
     throw error;
   });

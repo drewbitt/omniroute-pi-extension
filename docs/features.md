@@ -26,7 +26,7 @@ The extension does **not** implement its own cache files, TTL/four-hour freshnes
 
 ## Atomic gateway discovery
 
-- Primary request: `GET {baseUrl}/models?prefix=alias`; it solely owns model IDs, visibility, modalities, context limits, output limits, and primary `capabilities.effort_tiers`.
+- Primary request: `GET {baseUrl}/models?prefix=alias&configuredOnly=true`; it requests public alias IDs backed by an eligible configured connection and solely owns model IDs, visibility, display names, modalities, context limits, output limits, and primary `capabilities.effort_tiers`.
 - Derived grouped VS Code metadata request: `/api/v1/vscode/_/models`; it may contribute recognized reasoning effort only.
 - Both requests start concurrently and are mandatory participants. A network error, non-2xx response, invalid JSON/envelope/row aborts the sibling and rejects. No partial fresh list is returned.
 - Both endpoints accept `{ "data": [] }`; dual empty success is a valid empty fresh snapshot.
@@ -38,7 +38,7 @@ The extension does **not** implement its own cache files, TTL/four-hour freshnes
 - Retain conversational text rows only: exclude `embedding`, `image`, `video`, and `audio` types; reject declared non-text output; filter before deduplication so a valid chat duplicate survives.
 - Select the better duplicate by image-input capability, then larger context/output limits.
 - Exclude exactly `codex/gpt-5.6-sol-ultra`, `cx/gpt-5.6-sol-ultra`, `codex/gpt-5.6-terra-ultra`, and `cx/gpt-5.6-terra-ultra`. No provider/root/DeepSeek heuristic is applied.
-- Every returned row is a full `Model<"openai-responses">` with `provider`, `id`, `api`, `baseUrl`, input, zero cost fields, and context/output limits (128000/16384 defaults).
+- Every returned row is a full `Model<"openai-responses">` with `provider`, `id`, `api`, `baseUrl`, input, zero cost fields, and context/output limits (128000/16384 defaults). A non-empty primary `name` distinct from `id` is preferred; otherwise display falls back to `root`, then `id`.
 - Fresh effort union: primary `effort_tiers`; recognized suffixes (`-none`, `-low`, `-medium`, `-high`, `-xhigh`, `-max`) when the exact base ID is present; plus a provider-independent compatibility exception that builds a same-provider base for `gpt-5.6`/`gpt-5-6` Luna, Sol, or Terra effort-only families. Supplemental strict `id`/`root`/`parent` matches follow; root fallback is used only with no strict match and exactly one contributing supplemental root.
 - `ultra` is ignored. `none` remains foldable but does not itself enable reasoning. Missing adjustable effort fails closed to `reasoning: false` without `thinkingLevelMap`.
 

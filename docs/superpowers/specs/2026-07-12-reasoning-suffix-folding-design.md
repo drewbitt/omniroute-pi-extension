@@ -2,7 +2,7 @@
 
 ## Goal
 
-Keep OmniRoute's standard `/models?prefix=alias` response as the sole authority for model IDs and model metadata. Use `/api/v1/vscode/_/models` as supplemental reasoning-effort metadata only. Fold known reasoning variants into a verified real base model without inventing model IDs or conflating distinct effort levels.
+Keep OmniRoute's `/models?prefix=alias&configuredOnly=true` response as the sole authority for public alias model IDs backed by eligible configured connections and for their model metadata. Use `/api/v1/vscode/_/models` as supplemental reasoning-effort metadata only. Fold known reasoning variants into a verified real base model without inventing model IDs or conflating distinct effort levels.
 
 ## Effort model
 
@@ -12,7 +12,7 @@ The API suffix whitelist is `none`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ## Verified folding
 
-Primary discovery requests `/models?prefix=alias` so OmniRoute returns the short provider IDs used by the UI instead of the full canonical provider IDs. The catalog is dynamic and alias mode may return a reasoning suffix entry without an exact unsuffixed base.
+Primary discovery requests `/models?prefix=alias&configuredOnly=true` so OmniRoute returns short public provider IDs used by the UI instead of full canonical provider IDs, and excludes rows without an eligible configured connection. The catalog is dynamic and alias mode may return a reasoning suffix entry without an exact unsuffixed base.
 
 A suffixed primary model folds only when its exact suffix-stripped base is present as an eligible text model in the same primary response. A same-ID image-output entry does not qualify as the base. Otherwise the suffix model remains independently routable, even if other metadata describes reasoning efforts. This preserves `/models` as the authority for routable IDs and prevents the extension from synthesizing or misusing a bare ID.
 

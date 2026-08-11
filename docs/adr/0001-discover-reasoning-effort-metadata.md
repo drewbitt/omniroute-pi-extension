@@ -1,6 +1,6 @@
 # Use primary and supplemental model metadata for reasoning effort
 
-The primary OmniRoute `/models?prefix=alias` endpoint remains the source of truth for the Model Catalog. Alias prefix mode keeps the short provider IDs shown in the UI while determining which models exist and providing the base metadata that Pi needs to register the `omniroute` provider, including primary `capabilities.effort_tiers` when present.
+The primary OmniRoute `/models?prefix=alias&configuredOnly=true` endpoint remains the source of truth for the Model Catalog. Alias prefix mode keeps the short public provider IDs shown in the UI, while `configuredOnly=true` excludes rows without an eligible configured connection. The response determines which models exist and provides the base metadata that Pi needs to register the `omniroute` provider, including primary `capabilities.effort_tiers` when present.
 
 The OpenAI-compatible `/v1/models` shape does not fully standardize Pi thinking-level / reasoning-effort metadata. Discovery therefore unions three generic sources, without provider/family special cases:
 
@@ -22,7 +22,7 @@ The currently available supplemental endpoint is the VS Code-compatible `/api/v1
 
 A suffix variant is folded only when its exact suffix-stripped base is present as an eligible text model in the same primary catalog response. A response may omit that base or use the same ID for an image-output model; in either case the text suffix model remains independently routable rather than making the extension invent or misuse a base ID. Unknown future suffixes also remain untouched.
 
-Primary `/models?prefix=alias` and supplemental grouped VS Code metadata are both required participants in one atomic current-gateway snapshot. Both requests start concurrently and share only Pi's parent abort signal as the external cancellation/deadline source; the plugin does not impose its own elapsed-time discovery deadline. **All failure classes cancel the sibling immediately and write/publish nothing.** Distinguish failure classes:
+Primary `/models?prefix=alias&configuredOnly=true` and supplemental grouped VS Code metadata are both required participants in one atomic current-gateway snapshot. Both requests start concurrently and share only Pi's parent abort signal as the external cancellation/deadline source; the plugin does not impose its own elapsed-time discovery deadline. **All failure classes cancel the sibling immediately and write/publish nothing.** Distinguish failure classes:
 - Network errors, non-2xx HTTP, invalid JSON, invalid catalog envelope (`data` missing or not an array), or invalid endpoint-role row shapes => sanitized fixed-category `Error` (no statusText, URL, credentials, exception message, or body leak). Any invalid row fails that participant atomically and cancels the sibling.
 - Parent abort => sanitized `AbortError`.
 Successful JSON `{ data: [] }` from either is valid, not failure. Implementation must avoid unhandled-rejection races when cancelling siblings. Only dual success produces a fresh union and atomic store write; there is no stale/new merge and no optional/non-fatal supplemental path.
