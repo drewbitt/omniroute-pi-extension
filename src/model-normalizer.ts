@@ -25,13 +25,19 @@ export function normalizeModels(providerId: string, baseUrl: string, snapshot: C
   }
   const variants = new Map<string, ReasoningEffort[]>();
   const folded = new Set<string>();
-  for (const id of deduped.keys()) {
+  const compatibleBases = new Map<string, OmniRouteModel>();
+  for (const [id, model] of deduped) {
     const variant = parseVariant(id);
-    if (variant && deduped.has(variant.base)) {
+    if (!variant) continue;
+    if (deduped.has(variant.base) || isGpt56EffortFamily(variant.base)) {
       folded.add(id);
       variants.set(variant.base, mergeEfforts(variants.get(variant.base) ?? [], [variant.effort]));
+      if (!deduped.has(variant.base) && !compatibleBases.has(variant.base)) {
+        compatibleBases.set(variant.base, { ...model, id: variant.base, name: variant.base, root: variant.base.slice(variant.base.indexOf("/") + 1) });
+      }
     }
   }
+  for (const [id, model] of compatibleBases) deduped.set(id, model);
   const supplemental = buildSupplementalEffortIndex(snapshot.supplemental);
   return [...deduped.entries()]
     .filter(([id]) => !folded.has(id))
@@ -122,6 +128,11 @@ function isExactProviderMirror(id: string, parent: string) {
   return separator > 0 && parentSeparator > 0 &&
     id.slice(0, separator) !== parent.slice(0, parentSeparator) &&
     id.slice(separator + 1) === parent.slice(parentSeparator + 1);
+}
+
+function isGpt56EffortFamily(id: string) {
+  const modelId = id.slice(id.indexOf("/") + 1).toLowerCase();
+  return /^gpt-5(?:\.|-)6-(?:luna|sol|terra)$/.test(modelId);
 }
 
 function parseVariant(id: string) {

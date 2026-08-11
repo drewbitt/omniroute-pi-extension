@@ -456,14 +456,14 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     }
   });
 
-  it("preserves canonical suffix routes unless an exact conversational alias parent exists", async () => {
+  it("preserves non-family suffix routes unless an exact conversational alias parent exists", async () => {
     const server = await createFixtureServer({
       primary: {
         body: data([
-          primaryRow("cx/gpt-5.6-sol-high", { type: "image", output_modalities: ["image"] }),
-          primaryRow("codex/gpt-5.6-sol-high", { parent: "cx/gpt-5.6-sol-high" }),
-          primaryRow("codex/gpt-5.6-terra-high", { parent: "cx/gpt-5.6-terra-high" }),
-          primaryRow("codex/gpt-5.6-luna-high", { parent: "cx/gpt-5.6-luna-medium" }),
+          primaryRow("alias/reasoner-high", { type: "image", output_modalities: ["image"] }),
+          primaryRow("canonical/reasoner-high", { parent: "alias/reasoner-high" }),
+          primaryRow("canonical/other-high", { parent: "alias/other-high" }),
+          primaryRow("canonical/mismatch-high", { parent: "alias/mismatch-medium" }),
         ]),
       },
       supplemental: { body: data([]) },
@@ -473,9 +473,9 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
 
     assert.deepEqual(provider.getModels().map((model) => model.id), [
-      "codex/gpt-5.6-luna-high",
-      "codex/gpt-5.6-sol-high",
-      "codex/gpt-5.6-terra-high",
+      "canonical/mismatch-high",
+      "canonical/other-high",
+      "canonical/reasoner-high",
     ]);
   });
 
@@ -504,6 +504,57 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     assert.equal(chat.contextWindow, 128000);
     assert.equal(chat.maxTokens, 16384);
     assert.equal(getModel(provider, "openai/gpt-5.6-sol-ultra").thinkingLevelMap?.high, "high");
+  });
+
+  it("folds provider-independent GPT-5.6 effort rows into a compatible base when the catalog omits it", async () => {
+    const families = ["luna", "sol", "terra"];
+    const efforts = ["low", "medium", "high", "xhigh", "max"];
+    const server = await createFixtureServer({
+      primary: {
+        body: data(families.flatMap((family) =>
+          efforts.map((effort) => primaryRow(`dva/gpt-5-6-${family}-${effort}`))
+        )),
+      },
+      supplemental: { body: data([]) },
+    });
+    servers.push(server);
+    const provider = captureProvider(server.baseUrl);
+    await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+    assert.deepEqual(provider.getModels().map((model) => model.id), families.map((family) => `dva/gpt-5-6-${family}`));
+    for (const family of families) {
+      assert.deepEqual(getModel(provider, `dva/gpt-5-6-${family}`).thinkingLevelMap, {
+        off: null,
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+      });
+    }
+  });
+
+  it("does not synthesize missing bases outside the GPT-5.6 model family", async () => {
+    const server = await createFixtureServer({
+      primary: {
+        body: data([
+          primaryRow("vendor/gpt-5.5-mini-high"),
+          primaryRow("vendor/reasoner-high"),
+          primaryRow("vendor/gpt-5.6-preview-ultra"),
+        ]),
+      },
+      supplemental: { body: data([]) },
+    });
+    servers.push(server);
+    const provider = captureProvider(server.baseUrl);
+    await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+    assert.deepEqual(provider.getModels().map((model) => model.id), [
+      "vendor/gpt-5.5-mini-high",
+      "vendor/gpt-5.6-preview-ultra",
+      "vendor/reasoner-high",
+    ]);
   });
 
   it("does not treat model-family mini or ordinary ultra suffixes as reasoning efforts", async () => {

@@ -39,7 +39,7 @@ The extension does **not** implement its own cache files, TTL/four-hour freshnes
 - Select the better duplicate by image-input capability, then larger context/output limits.
 - Exclude exactly `codex/gpt-5.6-sol-ultra`, `cx/gpt-5.6-sol-ultra`, `codex/gpt-5.6-terra-ultra`, and `cx/gpt-5.6-terra-ultra`. No provider/root/DeepSeek heuristic is applied.
 - Every returned row is a full `Model<"openai-responses">` with `provider`, `id`, `api`, `baseUrl`, input, zero cost fields, and context/output limits (128000/16384 defaults).
-- Fresh effort union: primary `effort_tiers`, a suffix only when the exact base ID is also present in primary (`-none`, `-low`, `-medium`, `-high`, `-xhigh`, `-max`), then supplemental strict `id`/`root`/`parent` matches. Root fallback is used only with no strict match and exactly one contributing supplemental root.
+- Fresh effort union: primary `effort_tiers`; recognized suffixes (`-none`, `-low`, `-medium`, `-high`, `-xhigh`, `-max`) when the exact base ID is present; plus a provider-independent compatibility exception that builds a same-provider base for `gpt-5.6`/`gpt-5-6` Luna, Sol, or Terra effort-only families. Supplemental strict `id`/`root`/`parent` matches follow; root fallback is used only with no strict match and exactly one contributing supplemental root.
 - `ultra` is ignored. `none` remains foldable but does not itself enable reasoning. Missing adjustable effort fails closed to `reasoning: false` without `thinkingLevelMap`.
 
 ## Availability
