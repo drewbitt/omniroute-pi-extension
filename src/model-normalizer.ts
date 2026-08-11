@@ -19,6 +19,10 @@ export function normalizeModels(providerId: string, baseUrl: string, snapshot: C
     if (!isConversational(model) || EXCLUDED_SYNTHETIC_ULTRA_MODEL_IDS.has(normalized(model.id) ?? "")) continue;
     deduped.set(model.id, deduped.has(model.id) ? betterModel(deduped.get(model.id)!, model) : model);
   }
+  const eligibleIds = new Set(deduped.keys());
+  for (const [id, model] of deduped) {
+    if (model.parent && isExactProviderMirror(id, model.parent) && eligibleIds.has(model.parent)) deduped.delete(id);
+  }
   const variants = new Map<string, ReasoningEffort[]>();
   const folded = new Set<string>();
   for (const id of deduped.keys()) {
@@ -110,6 +114,14 @@ function betterModel(left: OmniRouteModel, right: OmniRouteModel) {
   if (leftImage === rightImage && rightContext > leftContext) return right;
   if (leftImage === rightImage && rightContext === leftContext && (right.max_output_tokens ?? 0) > (left.max_output_tokens ?? 0)) return right;
   return left;
+}
+
+function isExactProviderMirror(id: string, parent: string) {
+  const separator = id.indexOf("/");
+  const parentSeparator = parent.indexOf("/");
+  return separator > 0 && parentSeparator > 0 &&
+    id.slice(0, separator) !== parent.slice(0, parentSeparator) &&
+    id.slice(separator + 1) === parent.slice(parentSeparator + 1);
 }
 
 function parseVariant(id: string) {

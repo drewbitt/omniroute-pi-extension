@@ -399,6 +399,86 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     assert.equal(none.thinkingLevelMap, undefined);
   });
 
+  it("folds GPT-5.6 alias efforts while omitting exact canonical mirrors and image-only bare IDs", async () => {
+    const families = ["luna", "sol", "terra"];
+    const efforts = ["low", "medium", "high", "xhigh", "max"];
+    const primary = families.flatMap((family) => {
+      const model = `gpt-5.6-${family}`;
+      return [
+        primaryRow(`cx/${model}`),
+        primaryRow(`codex/${model}`, { type: "image", output_modalities: ["image"] }),
+        ...efforts.flatMap((effort) => [
+          primaryRow(`cx/${model}-${effort}`),
+          primaryRow(`codex/${model}-${effort}`, { parent: `cx/${model}-${effort}` }),
+        ]),
+      ];
+    });
+    const server = await createFixtureServer({
+      primary: { body: data(primary) },
+      supplemental: { body: data([]) },
+    });
+    servers.push(server);
+    const provider = captureProvider(server.baseUrl);
+    await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+    assert.deepEqual(provider.getModels().map((model) => model.id), families.map((family) => `cx/gpt-5.6-${family}`));
+    for (const family of families) {
+      const base = getModel(provider, `cx/gpt-5.6-${family}`);
+      assert.deepEqual(base.thinkingLevelMap, {
+        off: null,
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+      });
+      assert.equal(provider.getModels().some((model) => model.id.startsWith(`codex/gpt-5.6-${family}`)), false);
+    }
+  });
+
+  it("suppresses exact provider-mirror chains independently of catalog order", async () => {
+    const rows = [
+      primaryRow("provider-a/model-high", { parent: "provider-b/model-high" }),
+      primaryRow("provider-b/model-high", { parent: "provider-c/model-high" }),
+      primaryRow("provider-c/model-high"),
+    ];
+    for (const primary of [rows, [...rows].reverse()]) {
+      const server = await createFixtureServer({
+        primary: { body: data(primary) },
+        supplemental: { body: data([]) },
+      });
+      servers.push(server);
+      const provider = captureProvider(server.baseUrl);
+      await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+      assert.deepEqual(provider.getModels().map((model) => model.id), ["provider-c/model-high"]);
+    }
+  });
+
+  it("preserves canonical suffix routes unless an exact conversational alias parent exists", async () => {
+    const server = await createFixtureServer({
+      primary: {
+        body: data([
+          primaryRow("cx/gpt-5.6-sol-high", { type: "image", output_modalities: ["image"] }),
+          primaryRow("codex/gpt-5.6-sol-high", { parent: "cx/gpt-5.6-sol-high" }),
+          primaryRow("codex/gpt-5.6-terra-high", { parent: "cx/gpt-5.6-terra-high" }),
+          primaryRow("codex/gpt-5.6-luna-high", { parent: "cx/gpt-5.6-luna-medium" }),
+        ]),
+      },
+      supplemental: { body: data([]) },
+    });
+    servers.push(server);
+    const provider = captureProvider(server.baseUrl);
+    await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+    assert.deepEqual(provider.getModels().map((model) => model.id), [
+      "codex/gpt-5.6-luna-high",
+      "codex/gpt-5.6-sol-high",
+      "codex/gpt-5.6-terra-high",
+    ]);
+  });
+
   it("filters non-chat rows, deduplicates surviving IDs, applies token defaults, and excludes only the four exact ultra aliases", async () => {
     const server = await createFixtureServer({
       primary: {
@@ -424,6 +504,32 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     assert.equal(chat.contextWindow, 128000);
     assert.equal(chat.maxTokens, 16384);
     assert.equal(getModel(provider, "openai/gpt-5.6-sol-ultra").thinkingLevelMap?.high, "high");
+  });
+
+  it("does not treat model-family mini or ordinary ultra suffixes as reasoning efforts", async () => {
+    const server = await createFixtureServer({
+      primary: {
+        body: data([
+          primaryRow("vendor/gpt-5.5"),
+          primaryRow("vendor/gpt-5.5-mini"),
+          primaryRow("vendor/reasoner"),
+          primaryRow("vendor/reasoner-ultra"),
+        ]),
+      },
+      supplemental: { body: data([]) },
+    });
+    servers.push(server);
+    const provider = captureProvider(server.baseUrl);
+    await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+    assert.deepEqual(provider.getModels().map((model) => model.id), [
+      "vendor/gpt-5.5",
+      "vendor/gpt-5.5-mini",
+      "vendor/reasoner",
+      "vendor/reasoner-ultra",
+    ]);
+    assert.equal(getModel(provider, "vendor/gpt-5.5").thinkingLevelMap, undefined);
+    assert.equal(getModel(provider, "vendor/reasoner").thinkingLevelMap, undefined);
   });
 
   it("folds an exact -max variant, keeps unrelated ultra IDs, and lets Pi restore only normalized models", async () => {
