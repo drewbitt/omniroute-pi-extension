@@ -328,6 +328,29 @@ describe("OmniRoute Pi-native dynamic provider", () => {
     assert.equal(getModel(provider, "cx/id-fallback").name, "cx/id-fallback");
   });
 
+
+  it("namespaces persisted combos while preserving auto and provider route IDs", async () => {
+    const server = await createFixtureServer({
+      primary: {
+        body: data([
+          primaryRow("gpt-5.6-sol", { owned_by: "combo" }),
+          primaryRow("auto/best-coding", { owned_by: "combo" }),
+          primaryRow("cx/gpt-5.6-sol", { owned_by: "codex" }),
+        ]),
+      },
+      supplemental: { body: data([]) },
+    });
+    servers.push(server);
+    const provider = captureProvider(server.baseUrl);
+    await provider.refreshModels!(refreshContext(new InMemoryModelsStore()));
+
+    assert.deepEqual(provider.getModels().map((model) => model.id), [
+      "auto/best-coding",
+      "combo/gpt-5.6-sol",
+      "cx/gpt-5.6-sol",
+    ]);
+  });
+
   it("atomically merges primary tiers, exact-base suffixes, and strict supplemental matches", async () => {
     const server = await createFixtureServer({
       primary: {

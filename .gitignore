@@ -1,4 +1,6 @@
 .pi/
+.pi-subagents/
+.playwright-mcp/
 .serena/
 node_modules/
 .env

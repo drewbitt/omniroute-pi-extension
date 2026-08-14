@@ -7,7 +7,7 @@ export type OmniRouteConfig = {
 };
 
 export type OmniRouteModel = {
-  id: string; name?: string | null; root?: string | null; parent?: string | null; type?: string | null;
+  id: string; name?: string | null; root?: string | null; parent?: string | null; type?: string | null; owned_by?: string | null;
   capabilities?: { effort_tiers?: unknown }; input_modalities?: string[]; output_modalities?: string[];
   context_length?: number; max_output_tokens?: number; max_input_tokens?: number;
 };
@@ -101,7 +101,7 @@ function isOptionalNumber(value: unknown) {
 function isPrimaryRow(value: unknown): value is OmniRouteModel {
   if (!isRecord(value) || typeof value.id !== "string" || value.id.length === 0) return false;
   return isOptionalString(value.name) && isOptionalString(value.root) && isOptionalString(value.parent) &&
-    isOptionalString(value.type) && (value.capabilities === undefined || isRecord(value.capabilities)) &&
+    isOptionalString(value.type) && isOptionalString(value.owned_by) && (value.capabilities === undefined || isRecord(value.capabilities)) &&
     isOptionalStrings(value.input_modalities) && isOptionalStrings(value.output_modalities) &&
     isOptionalNumber(value.context_length) && isOptionalNumber(value.max_output_tokens) && isOptionalNumber(value.max_input_tokens);
 }

@@ -41,11 +41,11 @@ export function normalizeModels(providerId: string, baseUrl: string, snapshot: C
   const supplemental = buildSupplementalEffortIndex(snapshot.supplemental);
   return [...deduped.entries()]
     .filter(([id]) => !folded.has(id))
-    .sort(([left], [right]) => left.localeCompare(right))
     .map(([id, model]) => toModel(
       providerId, baseUrl, model,
       mergeEfforts(mergeEfforts(parseEfforts(model.capabilities?.effort_tiers), variants.get(id) ?? []), supplementalFor(model, supplemental)),
-    ));
+    ))
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function normalized(value?: string | null) {
@@ -160,7 +160,7 @@ function thinkingLevelMap(efforts: ReasoningEffort[]) {
 function toModel(providerId: string, baseUrl: string, model: OmniRouteModel, efforts: ReasoningEffort[]): Model<"openai-responses"> {
   const map = thinkingLevelMap(efforts);
   return {
-    id: model.id,
+    id: model.owned_by === "combo" && !model.id.includes("/") ? `combo/${model.id}` : model.id,
     name: model.name?.trim() && model.name.trim() !== model.id ? model.name.trim() : (model.root ?? model.id),
     provider: providerId,
     api: "openai-responses",
