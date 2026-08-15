@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { after, before, it } from "node:test";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/compat";
+import { createOmniRouteProvider } from "../index.ts";
 
 let server: http.Server;
 let baseUrl: string;
@@ -46,7 +46,8 @@ after(async () => {
 });
 
 it("streams text and an exact tool round-trip with model and bearer auth preserved", async () => {
-  const api = openAICompletionsApi();
+  const provider = createOmniRouteProvider();
+  assert(provider.stream);
   const model = {
     id: "gpt-5.6-sol",
     name: "GPT-5.6 Sol",
@@ -65,7 +66,7 @@ it("streams text and an exact tool round-trip with model and bearer auth preserv
     description: "Look up a value",
     parameters: { type: "object", properties: { value: { type: "number" } }, required: ["value"] },
   }];
-  const first = await api.stream(model, { messages: [user], tools }, { apiKey: "route-key", maxRetries: 0 }).result();
+  const first = await provider.stream(model, { messages: [user], tools }, { apiKey: "route-key", maxRetries: 0 }).result();
   assert.equal(first.stopReason, "toolUse");
   assert.deepEqual(first.content, [
     { type: "text", text: "Checking." },
@@ -81,7 +82,7 @@ it("streams text and an exact tool round-trip with model and bearer auth preserv
     isError: false,
     timestamp: 2,
   };
-  const second = await api.stream(model, { messages: [user, first, toolResult], tools }, { apiKey: "route-key", maxRetries: 0 }).result();
+  const second = await provider.stream(model, { messages: [user, first, toolResult], tools }, { apiKey: "route-key", maxRetries: 0 }).result();
   assert.equal(second.stopReason, "stop");
   assert.deepEqual(second.content, [{ type: "text", text: "Result: 42" }]);
   assert.equal(requests[0]?.model, "gpt-5.6-sol");
