@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Model, Provider } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/compat";
 import type {
@@ -20,8 +21,17 @@ const PROVIDER_NAME = "OmniRoute";
 const PROVIDER_API = "openai-completions" as const;
 const FALLBACK_BASE_URL = "http://127.0.0.1:20128/v1";
 
+function catalogScope(baseUrl: string, apiKey: string): string {
+  return createHash("sha256")
+    .update(baseUrl)
+    .update("\0")
+    .update(apiKey)
+    .digest("base64url");
+}
+
 export function createOmniRouteProvider(): Provider<"openai-completions"> {
   let models: readonly Model<"openai-completions">[] = [];
+  let activeScope: string | undefined;
   const streams = openAICompletionsApi();
 
   return {
@@ -44,16 +54,19 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
             persist: null,
             update: () => {
               models = [];
+              activeScope = undefined;
             },
           });
         }
         return;
       }
 
-      const apiKey =
+      const explicitApiKey =
         credential?.key?.trim() ||
         (credential ? undefined : process.env[API_KEY_ENV]?.trim());
-      const canRestore = !apiKey || apiKey === PUBLIC_API_KEY;
+      const apiKey = explicitApiKey || PUBLIC_API_KEY;
+      const canRestore = !explicitApiKey || explicitApiKey === PUBLIC_API_KEY;
+      const requestedScope = catalogScope(baseUrl, apiKey);
       if (context.stored) {
         const compatible = context.stored.models.filter(
           (model): model is Model<"openai-completions"> =>
@@ -69,12 +82,13 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
             ...(storedMatches ? {} : { persist: null }),
             update: () => {
               models = restored;
+              activeScope = storedMatches ? requestedScope : undefined;
             },
           }))
         )
           return;
       } else if (
-        !canRestore ||
+        activeScope !== requestedScope ||
         models.some((model) => model.baseUrl !== baseUrl)
       ) {
         if (
@@ -82,6 +96,7 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
             ...(canRestore ? {} : { persist: null }),
             update: () => {
               models = [];
+              activeScope = undefined;
             },
           }))
         )
@@ -102,6 +117,7 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
           : null,
         update: () => {
           models = refreshed;
+          activeScope = requestedScope;
         },
       });
     },
@@ -143,18 +159,32 @@ async function syncModels(ctx: ExtensionCommandContext): Promise<void> {
     );
     return;
   }
-  const signal = AbortSignal.timeout(60_000);
+  const existingCount =
+    ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels().length ?? 0;
+  const signal = AbortSignal.timeout(15_000);
   const result = await ctx.modelRegistry.refresh({
     providers: [PROVIDER_ID],
     force: true,
     signal,
   });
   if (result.aborted) {
-    ctx.ui.notify("OmniRoute model sync timed out.", "warning");
+    ctx.ui.notify(
+      `OmniRoute model sync timed out${existingCount ? `; using ${existingCount} existing models` : ""}.`,
+      "warning",
+    );
     return;
   }
   const error = result.errors.get(PROVIDER_ID);
-  if (error) throw error;
+  if (error) {
+    const retained = existingCount
+      ? ` Using ${existingCount} existing models.`
+      : "";
+    ctx.ui.notify(
+      `OmniRoute model sync failed: ${error.message}.${retained}`,
+      "error",
+    );
+    return;
+  }
   const count =
     ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels().length ?? 0;
   ctx.ui.notify(
@@ -168,9 +198,9 @@ export default function omniRouteExtension(pi: ExtensionAPI): void {
   pi.registerCommand("omni", {
     description: "Show OmniRoute status or refresh its model catalog",
     getArgumentCompletions(prefix) {
-      return ["status", "sync", "help"]
-        .filter((value) => value.startsWith(prefix))
-        .map((value) => ({ value, label: value }));
+      return ["status", "sync", "help"].flatMap((value) =>
+        value.startsWith(prefix) ? [{ value, label: value }] : [],
+      );
     },
     async handler(args, ctx) {
       const subcommand = args.trim().toLowerCase() || "status";

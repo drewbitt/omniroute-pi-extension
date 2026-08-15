@@ -475,6 +475,44 @@ describe("OmniRoute provider", () => {
     assert.deepEqual(ids(duplicateProvider), ["last-known-good"]);
   });
 
+  it("retains a secret catalog on refresh failure until its scope changes", async () => {
+    const response: { status?: number; payload: unknown } = {
+      payload: { data: [row("restricted")] },
+    };
+    const server = await fixture(response);
+    const provider = createOmniRouteProvider();
+    const current = credential(server.baseUrl, "restricted-key");
+    await provider.refreshModels!(
+      refreshHarness({ credential: current }).context,
+    );
+    assert.deepEqual(ids(provider), ["restricted"]);
+
+    await provider.refreshModels!(
+      refreshHarness({
+        credential: current,
+        allowNetwork: false,
+      }).context,
+    );
+    assert.deepEqual(ids(provider), ["restricted"]);
+
+    response.status = 503;
+    await assert.rejects(
+      provider.refreshModels!(
+        refreshHarness({ credential: current }).context,
+      ),
+      /HTTP 503/,
+    );
+    assert.deepEqual(ids(provider), ["restricted"]);
+
+    await provider.refreshModels!(
+      refreshHarness({
+        credential: credential(server.baseUrl, "different-key"),
+        allowNetwork: false,
+      }).context,
+    );
+    assert.deepEqual(ids(provider), []);
+  });
+
   it("propagates cancellation without publishing", async () => {
     const server = await fixture({ hold: true });
     const controller = new AbortController();

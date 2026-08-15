@@ -39,4 +39,34 @@ it("loads unconditionally and queues one current Pi native provider", async () =
   assert.equal(provider.auth.apiKey?.name, "OmniRoute API key");
   assert.equal(typeof provider.refreshModels, "function");
   assert.equal(provider.getModels().length, 0);
+
+  const command = result.extensions[0]?.commands.get("omni");
+  assert(command);
+  const notifications: Array<{ message: string; level: string }> = [];
+  const context = {
+    modelRegistry: {
+      getProviderAuth: async () => ({ auth: { apiKey: "redacted" } }),
+      getProvider: () => ({ getModels: () => [{}, {}, {}] }),
+      refresh: async () => ({
+        aborted: false,
+        errors: new Map([
+          ["omniroute", new Error("model discovery failed with HTTP 503")],
+        ]),
+      }),
+    },
+    ui: {
+      notify(message: string, level: string) {
+        notifications.push({ message, level });
+      },
+    },
+  } as unknown as Parameters<typeof command.handler>[1];
+
+  await command.handler("sync", context);
+  assert.deepEqual(notifications, [
+    {
+      message:
+        "OmniRoute model sync failed: model discovery failed with HTTP 503. Using 3 existing models.",
+      level: "error",
+    },
+  ]);
 });
