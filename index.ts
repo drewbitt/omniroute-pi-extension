@@ -44,9 +44,9 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
       const credential =
         context.credential?.type === "api_key" ? context.credential : undefined;
       const baseUrl =
-        credential?.env?.[BASE_URL_ENV] !== undefined
-          ? credentialBaseUrl(credential)
-          : normalizeBaseUrl(process.env[BASE_URL_ENV] ?? "");
+        credential?.env?.[BASE_URL_ENV] === undefined
+          ? normalizeBaseUrl(process.env[BASE_URL_ENV] ?? "")
+          : credentialBaseUrl(credential);
       if (!baseUrl) {
         if (context.stored || models.length > 0) {
           await context.publish({
@@ -64,7 +64,8 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
         credential?.key?.trim() ||
         (credential ? undefined : process.env[API_KEY_ENV]?.trim());
       const apiKey = explicitApiKey || PUBLIC_API_KEY;
-      const canRestore = !explicitApiKey || explicitApiKey === PUBLIC_API_KEY;
+      // The catalog holds only model metadata; the API key lives in auth.json.
+      // Always persist so cache-only one-shot mode (subagents) can restore models offline.
       const requestedScope = catalogScope(baseUrl, apiKey);
       if (context.stored) {
         const compatible = context.stored.models.filter(
@@ -74,7 +75,7 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
             model.baseUrl === baseUrl,
         );
         const storedMatches =
-          canRestore && compatible.length === context.stored.models.length;
+          compatible.length === context.stored.models.length;
         const restored = storedMatches ? compatible : [];
         if (
           !(await context.publish({
@@ -107,9 +108,7 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
       if (context.signal.aborted) return;
       const refreshed = normalizeModels(PROVIDER_ID, baseUrl, catalog);
       await context.publish({
-        ...(canRestore
-          ? { persist: { models: refreshed, checkedAt: Date.now() } }
-          : {}),
+        persist: { models: refreshed, checkedAt: Date.now() },
         update: () => {
           models = refreshed;
           activeScope = requestedScope;

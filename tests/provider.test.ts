@@ -245,13 +245,18 @@ describe("OmniRoute provider", () => {
       key: "stored-secret",
       env: { [BASE_URL_ENV]: "not-an-http-url" },
     };
-    assert.equal(await auth.check!({ ctx, credential: invalid, signal }), undefined);
+    assert.equal(
+      await auth.check!({ ctx, credential: invalid, signal }),
+      undefined,
+    );
     assert.equal(
       await auth.resolve!({ ctx, credential: invalid, signal }),
       undefined,
     );
     const provider = createOmniRouteProvider();
-    await provider.refreshModels!(refreshHarness({ credential: invalid }).context);
+    await provider.refreshModels!(
+      refreshHarness({ credential: invalid }).context,
+    );
     assert.deepEqual(ids(provider), []);
     assert.equal(server.requests, 0);
   });
@@ -340,8 +345,8 @@ describe("OmniRoute provider", () => {
     });
     assert.equal(server.auth, "Bearer secret");
     assert.equal(server.search, "?prefix=alias&configuredOnly=true");
-    assert.equal(harness.stored, undefined);
-    assert.deepEqual(harness.persistenceActions, ["omitted", "omitted"]);
+    assert.ok(harness.stored);
+    assert.deepEqual(harness.persistenceActions, ["omitted", "snapshot"]);
   });
 
   it("filters non-chat rows and handles edge metadata", async () => {
@@ -407,7 +412,7 @@ describe("OmniRoute provider", () => {
     assert.deepEqual(provider.getModels(), []);
   });
 
-  it("restores only public, valid snapshots for the same endpoint", async () => {
+  it("restores endpoint-scoped snapshots regardless of key", async () => {
     const server = await fixture({ payload: { data: [row("stored")] } });
     const online = createOmniRouteProvider();
     const first = refreshHarness({
@@ -434,9 +439,10 @@ describe("OmniRoute provider", () => {
     });
     const restricted = createOmniRouteProvider();
     await restricted.refreshModels!(restrictedHarness.context);
-    assert.deepEqual(ids(restricted), []);
-    assert.equal(restrictedHarness.stored, undefined);
-    assert.deepEqual(restrictedHarness.persistenceActions, ["delete"]);
+    // Endpoint-scoped catalogs restore for the same endpoint regardless of key;
+    // the API key is stored separately in auth.json, never in the catalog.
+    assert.deepEqual(ids(restricted), ["stored"]);
+    assert.deepEqual(restrictedHarness.persistenceActions, ["omitted"]);
 
     const switched = createOmniRouteProvider();
     await switched.refreshModels!(
@@ -533,7 +539,7 @@ describe("OmniRoute provider", () => {
     assert.deepEqual(ids(duplicateProvider), ["last-known-good"]);
   });
 
-  it("retains a secret catalog on refresh failure until its scope changes", async () => {
+  it("retains an endpoint-scoped catalog on refresh failure until its scope changes", async () => {
     const response: { status?: number; payload: unknown } = {
       payload: { data: [row("restricted")] },
     };
@@ -543,7 +549,7 @@ describe("OmniRoute provider", () => {
     const initial = refreshHarness({ credential: current });
     await provider.refreshModels!(initial.context);
     assert.deepEqual(ids(provider), ["restricted"]);
-    assert.deepEqual(initial.persistenceActions, ["omitted", "omitted"]);
+    assert.deepEqual(initial.persistenceActions, ["omitted", "snapshot"]);
 
     const offline = refreshHarness({
       credential: current,
@@ -565,10 +571,13 @@ describe("OmniRoute provider", () => {
     });
     await provider.refreshModels!(changed.context);
     assert.deepEqual(ids(provider), []);
+    // Scope changed with no stored catalog to delete: just clears in-memory state.
     assert.deepEqual(changed.persistenceActions, ["omitted"]);
   });
 
-  it("propagates cancellation without publishing", { timeout: 5000 }, async () => {
+  it("propagates cancellation without publishing", {
+    timeout: 5000,
+  }, async () => {
     const server = await fixture({ hold: true });
     const controller = new AbortController();
     const provider = createOmniRouteProvider();
@@ -586,27 +595,25 @@ describe("OmniRoute provider", () => {
     assert.equal(harness.stored, undefined);
   });
 
-  it(
-    "propagates cancellation while reading the response body",
-    { timeout: 5000 },
-    async () => {
-      const server = await fixture({ stallBody: true });
-      const controller = new AbortController();
-      const provider = createOmniRouteProvider();
-      const pending = provider.refreshModels!(
-        refreshHarness({
-          credential: credential(server.baseUrl),
-          signal: controller.signal,
-        }).context,
-      );
-      await server.requested;
-      controller.abort();
-      await assert.rejects(
-        pending,
-        (error) => error instanceof Error && error.name === "AbortError",
-      );
-    },
-  );
+  it("propagates cancellation while reading the response body", {
+    timeout: 5000,
+  }, async () => {
+    const server = await fixture({ stallBody: true });
+    const controller = new AbortController();
+    const provider = createOmniRouteProvider();
+    const pending = provider.refreshModels!(
+      refreshHarness({
+        credential: credential(server.baseUrl),
+        signal: controller.signal,
+      }).context,
+    );
+    await server.requested;
+    controller.abort();
+    await assert.rejects(
+      pending,
+      (error) => error instanceof Error && error.name === "AbortError",
+    );
+  });
 
   it("clears stale models and storage when configuration is removed", async () => {
     const server = await fixture({ payload: { data: [row("stale")] } });
