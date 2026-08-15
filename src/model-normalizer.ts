@@ -21,13 +21,17 @@ export function normalizeModels(
   baseUrl: string,
   rows: readonly OmniRouteModel[],
 ): readonly Model<"openai-completions">[] {
-  const models = new Map<string, OmniRouteModel>();
+  const models: OmniRouteModel[] = [];
+  const seen = new Set<string>();
   for (const row of rows) {
     if (!isConversational(row)) continue;
-    const current = models.get(row.id);
-    models.set(row.id, current ? betterModel(current, row) : row);
+    if (seen.has(row.id)) {
+      throw new Error(`OmniRoute catalog contains duplicate model ID: ${row.id}`);
+    }
+    seen.add(row.id);
+    models.push(row);
   }
-  return [...models.values()]
+  return models
     .map((model) => toModel(providerId, baseUrl, model))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -59,17 +63,19 @@ function toModel(
 
   return {
     id: model.id,
-    name:
-      displayName && displayName !== model.id
-        ? displayName
-        : model.root?.trim() || model.id,
+    name: displayName || model.id,
     api: "openai-completions",
     provider: providerId,
     baseUrl,
     reasoning,
     ...(map ? { thinkingLevelMap: map } : {}),
     input: vision ? ["text", "image"] : ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: {
+      input: price(model.pricing?.input),
+      output: price(model.pricing?.output),
+      cacheRead: price(model.pricing?.cached),
+      cacheWrite: price(model.pricing?.cache_creation),
+    },
     contextWindow,
     maxTokens: Math.min(maxTokens, contextWindow),
   };
@@ -79,12 +85,10 @@ function parseEfforts(value: unknown): Effort[] {
   if (!Array.isArray(value)) return [];
   const efforts: Effort[] = [];
   for (const item of value) {
-    const raw =
-      typeof item === "string"
-        ? item
-        : isRecord(item) && typeof item.effort === "string"
-          ? item.effort
-          : undefined;
+    let raw: string | undefined;
+    if (typeof item === "string") raw = item;
+    else if (isRecord(item) && typeof item.effort === "string")
+      raw = item.effort;
     const effort = raw?.trim().toLowerCase();
     if (effort && EFFORTS.has(effort) && !efforts.includes(effort as Effort))
       efforts.push(effort as Effort);
@@ -114,32 +118,11 @@ function isConversational(model: OmniRouteModel): boolean {
   );
 }
 
-function betterModel(
-  left: OmniRouteModel,
-  right: OmniRouteModel,
-): OmniRouteModel {
-  const leftVision = Boolean(
-    left.input_modalities?.includes("image") ||
-      left.capabilities?.vision ||
-      left.capabilities?.attachment,
-  );
-  const rightVision = Boolean(
-    right.input_modalities?.includes("image") ||
-      right.capabilities?.vision ||
-      right.capabilities?.attachment,
-  );
-  if (leftVision !== rightVision) return rightVision ? right : left;
-  const leftContext =
-    positive(left.context_length) ?? positive(left.max_input_tokens) ?? 0;
-  const rightContext =
-    positive(right.context_length) ?? positive(right.max_input_tokens) ?? 0;
-  if (leftContext !== rightContext)
-    return rightContext > leftContext ? right : left;
-  const leftOutput =
-    positive(left.max_output_tokens) ?? positive(left.max_tokens) ?? 0;
-  const rightOutput =
-    positive(right.max_output_tokens) ?? positive(right.max_tokens) ?? 0;
-  return rightOutput > leftOutput ? right : left;
+
+function price(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0;
 }
 
 function positive(value: number | undefined): number | undefined {

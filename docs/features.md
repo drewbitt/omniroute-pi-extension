@@ -6,27 +6,28 @@ The extension unconditionally registers one complete `Provider<"openai-completio
 
 ## Authentication
 
-`/login omniroute` prompts for an HTTP(S) server URL and an optional key. The normalized `/v1` URL is stored in the provider credential's environment and the key in Pi's credential store. `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY` are ambient fallbacks. A configured key always produces `Authorization: Bearer <key>`; public/local servers receive a harmless placeholder so Pi and OpenAI-compatible clients have a configured credential.
+`/login omniroute` prompts for an HTTP(S) server URL and an optional key. The normalized `/v1` URL is stored in the provider credential's environment and the key in Pi's credential store. `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY` are fallbacks only when no stored credential is selected. A configured key produces `Authorization: Bearer <key>`; public/local servers receive a harmless placeholder so Pi and OpenAI-compatible clients have a configured credential.
 
 ## Catalog discovery
 
-The sole discovery dependency is authenticated `GET <baseUrl>/models?prefix=alias&configuredOnly=true`, where `baseUrl` ends in `/v1`. Both OpenAI's `{data:[...]}` envelope and a bare array are accepted. Network errors, non-2xx responses, malformed JSON, invalid envelopes, or invalid row shapes reject the refresh. Abort signals are passed directly to `fetch`.
+The sole discovery dependency is authenticated `GET <baseUrl>/models?prefix=alias&configuredOnly=true`, where `baseUrl` ends in `/v1`. OmniRoute implements both query parameters: alias mode avoids canonical twins, and configured-only mode filters routes without an eligible connection. Both OpenAI's `{data:[...]}` envelope and a bare array are accepted. Network errors, non-2xx responses, malformed JSON, invalid envelopes, or invalid row shapes reject the refresh. Cancellation is preserved during connection and response-body reads.
 
-No management, pricing, OpenCode, or VS Code endpoint is required. Listing is not treated as proof that every route is callable.
+No management, OpenCode, or VS Code endpoint is required. Listing is not treated as proof that every route is callable.
 
 ## Model normalization
 
 - Model IDs are byte-for-byte catalog IDs. Bare combos are not prefixed or slugged.
 - Explicit embedding/image/video/audio model types and explicit non-text output models are omitted.
-- Exact duplicate IDs select the row with vision support, then larger context/output limits.
+- Exact duplicate conversational IDs reject the refresh. OmniRoute owns catalog deduplication, so the extension does not invent a merged capability profile.
 - Reasoning is enabled only by explicit `capabilities.reasoning`, `capabilities.thinking`, or a recognized adjustable `capabilities.effort_tiers` value; `none` alone fails closed.
 - Vision is enabled only by image input or explicit vision/attachment capability.
-- Positive reported limits are used; defaults are 128,000 context and 16,384 output, with output capped to context.
-- Required Pi cost fields are zero because reliable resolved-route pricing is unavailable. This represents unknown cost, not free service.
+- Positive reported limits are used. Missing limits use Pi's compatibility defaults of 128,000 context and 16,384 output, with output capped to context.
+- Explicit `/v1/models` pricing is mapped from OmniRoute's per-million-token fields. Missing or route-dependent prices remain zero, which means unknown rather than free.
+- An explicit catalog name is used when present; otherwise the exact routing ID is the display name.
 
 ## Persistence and endpoint isolation
 
-Pi owns the provider-scoped model store and generation-checked publication. A refresh restores stored models only when provider ID, API, and normalized model `baseUrl` match the current credential. An endpoint switch therefore starts with an empty catalog instead of briefly exposing the previous endpoint's models. A failed online refresh retains a matching restored last-known-good catalog.
+Pi owns the provider-scoped model store and generation-checked publication. Public/keyless catalogs are restored only when every stored model matches the provider, API, and normalized endpoint. Catalogs fetched with a secret key are not persisted because two keys on the same endpoint may have different model permissions. Endpoint, key, or configuration changes clear stale models before discovery. A failed public refresh retains its matching last-known-good catalog.
 
 ## Commands
 

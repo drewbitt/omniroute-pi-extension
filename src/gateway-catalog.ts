@@ -29,6 +29,12 @@ export type OmniRouteModel = {
   max_output_tokens?: number;
   max_input_tokens?: number;
   max_tokens?: number;
+  pricing?: {
+    input?: number;
+    output?: number;
+    cached?: number;
+    cache_creation?: number;
+  };
 };
 
 export function normalizeBaseUrl(value: string): string | undefined {
@@ -107,8 +113,10 @@ export function createOmniRouteAuth(): ApiKeyAuth {
         credentialBaseUrl(credential) ??
         normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "");
       if (!baseUrl) return undefined;
-      const apiKey =
-        credential?.key ?? (await ctx.env(API_KEY_ENV)) ?? PUBLIC_API_KEY;
+      const candidate = credential
+        ? credential.key
+        : await ctx.env(API_KEY_ENV);
+      const apiKey = candidate?.trim() || PUBLIC_API_KEY;
       return {
         auth: { apiKey, baseUrl },
         env: { ...credential?.env, [BASE_URL_ENV]: baseUrl },
@@ -157,7 +165,12 @@ export async function fetchModelCatalog(
   let payload: unknown;
   try {
     payload = await response.json();
-  } catch {
+  } catch (error) {
+    if (
+      signal.aborted ||
+      (error instanceof Error && error.name === "AbortError")
+    )
+      throw abortError();
     throw new Error("OmniRoute model discovery returned invalid JSON");
   }
   const rows = Array.isArray(payload)
@@ -192,6 +205,17 @@ function optionalStrings(value: unknown): boolean {
   );
 }
 
+function optionalPricing(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  return (
+    optionalNumber(value.input) &&
+    optionalNumber(value.output) &&
+    optionalNumber(value.cached) &&
+    optionalNumber(value.cache_creation)
+  );
+}
+
 function isModelRow(value: unknown): value is OmniRouteModel {
   if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim())
     return false;
@@ -207,7 +231,8 @@ function isModelRow(value: unknown): value is OmniRouteModel {
     optionalNumber(value.context_length) &&
     optionalNumber(value.max_output_tokens) &&
     optionalNumber(value.max_input_tokens) &&
-    optionalNumber(value.max_tokens)
+    optionalNumber(value.max_tokens) &&
+    optionalPricing(value.pricing)
   );
 }
 

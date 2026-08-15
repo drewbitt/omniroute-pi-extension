@@ -13,6 +13,7 @@ import {
   BASE_URL_ENV,
   createOmniRouteAuth,
   normalizeBaseUrl,
+  PUBLIC_API_KEY,
 } from "../src/gateway-catalog.ts";
 
 const servers: http.Server[] = [];
@@ -50,6 +51,7 @@ async function fixture(response: {
   status?: number;
   payload?: unknown;
   hold?: boolean;
+  stallBody?: boolean;
 }) {
   let requests = 0;
   let auth = "";
@@ -62,6 +64,10 @@ async function fixture(response: {
     reply.writeHead(response.status ?? 200, {
       "content-type": "application/json",
     });
+    if (response.stallBody) {
+      reply.write('{"data":[');
+      return;
+    }
     reply.end(
       typeof response.payload === "string"
         ? response.payload
@@ -91,7 +97,7 @@ function credential(baseUrl: string, key = "secret"): ApiKeyCredential {
 }
 
 function refreshHarness(options: {
-  credential: ApiKeyCredential;
+  credential?: ApiKeyCredential;
   stored?: ModelsStoreEntry;
   allowNetwork?: boolean;
   signal?: AbortSignal;
@@ -165,19 +171,47 @@ describe("OmniRoute provider", () => {
     assert.equal(loggedIn.env?.[BASE_URL_ENV], server.baseUrl);
     assert.equal(loggedIn.key, undefined);
     assert.equal(server.auth, "Bearer omniroute-public");
+
+    const storedWithoutKey = await auth.resolve!({
+      ctx: {
+        env: async (name) =>
+          name === "OMNIROUTE_API_KEY" ? "ambient-secret" : undefined,
+        fileExists: async () => false,
+      },
+      credential: {
+        type: "api_key",
+        env: { [BASE_URL_ENV]: server.baseUrl },
+      },
+      signal: new AbortController().signal,
+    });
+    assert.equal(storedWithoutKey?.auth.apiKey, PUBLIC_API_KEY);
+
+    const blankEnvironmentKey = await auth.resolve!({
+      ctx: {
+        env: async (name) =>
+          name === BASE_URL_ENV
+            ? server.baseUrl
+            : name === "OMNIROUTE_API_KEY"
+              ? "   "
+              : undefined,
+        fileExists: async () => false,
+      },
+      signal: new AbortController().signal,
+    });
+    assert.equal(blankEnvironmentKey?.auth.apiKey, PUBLIC_API_KEY);
   });
 
-  it("uses Pi 0.84 credential resolution, publication, and offline store restore", async () => {
+  it("uses Pi credential resolution and restores a public catalog offline", async () => {
     const server = await fixture({ payload: { data: [row("pi-runtime")] } });
     process.env.OMNIROUTE_BASE_URL = server.baseUrl;
-    process.env.OMNIROUTE_API_KEY = "runtime-key";
+    process.env.OMNIROUTE_API_KEY = PUBLIC_API_KEY;
     const store = new InMemoryModelsStore();
     const authContext = {
       env: async (name: string) =>
         name === BASE_URL_ENV
           ? server.baseUrl
           : name === "OMNIROUTE_API_KEY"
-            ? "runtime-key"
+            ? PUBLIC_API_KEY
             : undefined,
       fileExists: async () => false,
     };
@@ -189,7 +223,7 @@ describe("OmniRoute provider", () => {
       online.getModel("omniroute", "pi-runtime")?.baseUrl,
       server.baseUrl,
     );
-    assert.equal(server.auth, "Bearer runtime-key");
+    assert.equal(server.auth, `Bearer ${PUBLIC_API_KEY}`);
 
     const offline = createModels({ modelsStore: store, authContext });
     offline.setProvider(createOmniRouteProvider());
@@ -199,7 +233,7 @@ describe("OmniRoute provider", () => {
     assert.equal(server.requests, 1);
   });
 
-  it("refreshes the authenticated public catalog and preserves exact IDs", async () => {
+  it("preserves routing IDs and maps explicit catalog metadata", async () => {
     const server = await fixture({
       payload: {
         data: [
@@ -208,7 +242,17 @@ describe("OmniRoute provider", () => {
           row("cx/gpt-5.6-sol", {
             capabilities: { reasoning: true, effort_tiers: ["low", "high"] },
           }),
-          row("vision/model", { input_modalities: ["text", "image"] }),
+          row("vision/model", {
+            name: "Vision Model",
+            root: "canonical/model",
+            input_modalities: ["text", "image"],
+            pricing: {
+              input: 1.25,
+              output: 5,
+              cached: 0.5,
+              cache_creation: 2,
+            },
+          }),
           row("image-only", { type: "image", output_modalities: ["image"] }),
         ],
       },
@@ -228,31 +272,26 @@ describe("OmniRoute provider", () => {
         ?.thinkingLevelMap?.high,
       "high",
     );
-    assert.deepEqual(
-      provider.getModels().find((model) => model.id === "vision/model")?.input,
-      ["text", "image"],
-    );
+    const vision = provider
+      .getModels()
+      .find((model) => model.id === "vision/model");
+    assert.deepEqual(vision?.input, ["text", "image"]);
+    assert.equal(vision?.name, "Vision Model");
+    assert.deepEqual(vision?.cost, {
+      input: 1.25,
+      output: 5,
+      cacheRead: 0.5,
+      cacheWrite: 2,
+    });
     assert.equal(server.auth, "Bearer secret");
     assert.equal(server.search, "?prefix=alias&configuredOnly=true");
-    assert.deepEqual(
-      harness.stored?.models.map((model) => model.id),
-      ids(provider),
-    );
+    assert.equal(harness.stored, undefined);
   });
 
-  it("keeps normalization conservative across duplicates and edge metadata", async () => {
+  it("filters non-chat rows and handles edge metadata", async () => {
     const server = await fixture({
       payload: {
         data: [
-          row("duplicate", {
-            context_length: 64_000,
-            max_output_tokens: 8_000,
-          }),
-          row("duplicate", {
-            input_modalities: ["text", "image"],
-            context_length: 32_000,
-            max_output_tokens: 4_000,
-          }),
           row("none-only", {
             capabilities: { effort_tiers: ["none"] },
           }),
@@ -271,15 +310,7 @@ describe("OmniRoute provider", () => {
       refreshHarness({ credential: credential(server.baseUrl) }).context,
     );
 
-    assert.deepEqual(ids(provider), [
-      "capped-output",
-      "duplicate",
-      "none-only",
-    ]);
-    assert.deepEqual(
-      provider.getModels().find((model) => model.id === "duplicate")?.input,
-      ["text", "image"],
-    );
+    assert.deepEqual(ids(provider), ["capped-output", "none-only"]);
     assert.equal(
       provider.getModels().find((model) => model.id === "none-only")?.reasoning,
       false,
@@ -301,52 +332,85 @@ describe("OmniRoute provider", () => {
       ],
     });
     const provider = createOmniRouteProvider();
-    const first = refreshHarness({ credential: credential(server.baseUrl) });
+    const first = refreshHarness({
+      credential: credential(server.baseUrl, PUBLIC_API_KEY),
+    });
     await provider.refreshModels!(first.context);
     assert.equal(provider.getModels()[0]?.contextWindow, 128_000);
     assert.equal(provider.getModels()[0]?.maxTokens, 16_384);
 
     const emptyServer = await fixture({ payload: { data: [] } });
     const empty = refreshHarness({
-      credential: credential(emptyServer.baseUrl),
+      credential: credential(emptyServer.baseUrl, PUBLIC_API_KEY),
       stored: first.stored,
     });
     await provider.refreshModels!(empty.context);
     assert.deepEqual(provider.getModels(), []);
   });
 
-  it("restores offline only for the same endpoint and isolates endpoint switches", async () => {
+  it("restores only public, valid snapshots for the same endpoint", async () => {
     const server = await fixture({ payload: { data: [row("stored")] } });
     const online = createOmniRouteProvider();
-    const first = refreshHarness({ credential: credential(server.baseUrl) });
+    const first = refreshHarness({
+      credential: credential(server.baseUrl, PUBLIC_API_KEY),
+    });
     await online.refreshModels!(first.context);
     assert(first.stored);
 
     const restored = createOmniRouteProvider();
     await restored.refreshModels!(
       refreshHarness({
-        credential: credential(server.baseUrl),
+        credential: credential(server.baseUrl, PUBLIC_API_KEY),
         stored: first.stored,
         allowNetwork: false,
       }).context,
     );
     assert.deepEqual(ids(restored), ["stored"]);
 
+    const restrictedHarness = refreshHarness({
+      credential: credential(server.baseUrl, "different-secret"),
+      stored: first.stored,
+      allowNetwork: false,
+    });
+    const restricted = createOmniRouteProvider();
+    await restricted.refreshModels!(restrictedHarness.context);
+    assert.deepEqual(ids(restricted), []);
+    assert.equal(restrictedHarness.stored, undefined);
+
     const switched = createOmniRouteProvider();
     await switched.refreshModels!(
       refreshHarness({
-        credential: credential("https://other.test/v1"),
+        credential: credential("https://other.test/v1", PUBLIC_API_KEY),
         stored: first.stored,
         allowNetwork: false,
       }).context,
     );
     assert.deepEqual(ids(switched), []);
+
+    const mixed: ModelsStoreEntry = {
+      models: [
+        ...first.stored.models,
+        { ...first.stored.models[0]!, baseUrl: "https://other.test/v1" },
+      ],
+      checkedAt: first.stored.checkedAt,
+    };
+    const corrupted = createOmniRouteProvider();
+    await corrupted.refreshModels!(
+      refreshHarness({
+        credential: credential(server.baseUrl, PUBLIC_API_KEY),
+        stored: mixed,
+        allowNetwork: false,
+      }).context,
+    );
+    assert.deepEqual(ids(corrupted), []);
   });
 
   it("retains restored models on HTTP failure and rejects malformed catalogs", async () => {
     const good = await fixture({ payload: { data: [row("last-known-good")] } });
     const initial = createOmniRouteProvider();
-    const first = refreshHarness({ credential: credential(good.baseUrl) });
+    const first = refreshHarness({
+      credential: credential(good.baseUrl, PUBLIC_API_KEY),
+    });
     await initial.refreshModels!(first.context);
 
     const failingServer = await fixture({ status: 503 });
@@ -361,7 +425,7 @@ describe("OmniRoute provider", () => {
     await assert.rejects(
       failing.refreshModels!(
         refreshHarness({
-          credential: credential(failingServer.baseUrl),
+          credential: credential(failingServer.baseUrl, PUBLIC_API_KEY),
           stored: storedForFailingEndpoint,
         }).context,
       ),
@@ -384,6 +448,28 @@ describe("OmniRoute provider", () => {
       ),
       /invalid JSON/,
     );
+
+    const duplicate = await fixture({
+      payload: { data: [row("duplicate"), row("duplicate")] },
+    });
+    const storedForDuplicate: ModelsStoreEntry = {
+      models: first.stored!.models.map((model) => ({
+        ...model,
+        baseUrl: duplicate.baseUrl,
+      })),
+      checkedAt: first.stored!.checkedAt,
+    };
+    const duplicateProvider = createOmniRouteProvider();
+    await assert.rejects(
+      duplicateProvider.refreshModels!(
+        refreshHarness({
+          credential: credential(duplicate.baseUrl, PUBLIC_API_KEY),
+          stored: storedForDuplicate,
+        }).context,
+      ),
+      /duplicate model ID/,
+    );
+    assert.deepEqual(ids(duplicateProvider), ["last-known-good"]);
   });
 
   it("propagates cancellation without publishing", async () => {
@@ -403,5 +489,43 @@ describe("OmniRoute provider", () => {
       (error) => error instanceof Error && error.name === "AbortError",
     );
     assert.equal(harness.stored, undefined);
+  });
+
+  it("propagates cancellation while reading the response body", async () => {
+    const server = await fixture({ stallBody: true });
+    const controller = new AbortController();
+    const provider = createOmniRouteProvider();
+    const pending = provider.refreshModels!(
+      refreshHarness({
+        credential: credential(server.baseUrl),
+        signal: controller.signal,
+      }).context,
+    );
+    while (server.requests === 0)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    controller.abort();
+    await assert.rejects(
+      pending,
+      (error) => error instanceof Error && error.name === "AbortError",
+    );
+  });
+
+  it("clears stale models and storage when configuration is removed", async () => {
+    const server = await fixture({ payload: { data: [row("stale")] } });
+    const provider = createOmniRouteProvider();
+    const populated = refreshHarness({
+      credential: credential(server.baseUrl, PUBLIC_API_KEY),
+    });
+    await provider.refreshModels!(populated.context);
+    assert(populated.stored);
+
+    delete process.env.OMNIROUTE_BASE_URL;
+    const unconfigured = refreshHarness({
+      stored: populated.stored,
+      allowNetwork: false,
+    });
+    await provider.refreshModels!(unconfigured.context);
+    assert.deepEqual(ids(provider), []);
+    assert.equal(unconfigured.stored, undefined);
   });
 });

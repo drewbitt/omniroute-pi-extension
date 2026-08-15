@@ -5,11 +5,13 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+  API_KEY_ENV,
   BASE_URL_ENV,
   createOmniRouteAuth,
   credentialBaseUrl,
   fetchModelCatalog,
   normalizeBaseUrl,
+  PUBLIC_API_KEY,
 } from "./src/gateway-catalog.ts";
 import { normalizeModels } from "./src/model-normalizer.ts";
 
@@ -29,30 +31,55 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
     auth: { apiKey: createOmniRouteAuth() },
     getModels: () => models,
     async refreshModels(context) {
+      const credential =
+        context.credential?.type === "api_key"
+          ? context.credential
+          : undefined;
       const baseUrl =
-        (context.credential?.type === "api_key"
-          ? credentialBaseUrl(context.credential)
-          : undefined) ?? normalizeBaseUrl(process.env[BASE_URL_ENV] ?? "");
-      if (!baseUrl) return;
+        credentialBaseUrl(credential) ??
+        normalizeBaseUrl(process.env[BASE_URL_ENV] ?? "");
+      if (!baseUrl) {
+        if (context.stored || models.length > 0) {
+          await context.publish({
+            persist: null,
+            update: () => {
+              models = [];
+            },
+          });
+        }
+        return;
+      }
 
+      const apiKey =
+        credential?.key?.trim() ||
+        (credential ? undefined : process.env[API_KEY_ENV]?.trim());
+      const canRestore = !apiKey || apiKey === PUBLIC_API_KEY;
       if (context.stored) {
-        const restored = context.stored.models.filter(
+        const compatible = context.stored.models.filter(
           (model): model is Model<"openai-completions"> =>
             model.provider === PROVIDER_ID &&
             model.api === PROVIDER_API &&
             model.baseUrl === baseUrl,
         );
+        const storedMatches =
+          canRestore && compatible.length === context.stored.models.length;
+        const restored = storedMatches ? compatible : [];
         if (
           !(await context.publish({
+            ...(storedMatches ? {} : { persist: null }),
             update: () => {
               models = restored;
             },
           }))
         )
           return;
-      } else if (models.some((model) => model.baseUrl !== baseUrl)) {
+      } else if (
+        !canRestore ||
+        models.some((model) => model.baseUrl !== baseUrl)
+      ) {
         if (
           !(await context.publish({
+            ...(canRestore ? {} : { persist: null }),
             update: () => {
               models = [];
             },
@@ -61,12 +88,7 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
           return;
       }
 
-      if (!context.allowNetwork || context.signal.aborted) return;
-      const apiKey =
-        context.credential?.type === "api_key"
-          ? context.credential.key
-          : undefined;
-      if (!apiKey) return;
+      if (!context.allowNetwork || context.signal.aborted || !apiKey) return;
       const catalog = await fetchModelCatalog(
         { baseUrl },
         apiKey,
@@ -75,7 +97,9 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
       if (context.signal.aborted) return;
       const refreshed = normalizeModels(PROVIDER_ID, baseUrl, catalog);
       await context.publish({
-        persist: { models: refreshed, checkedAt: Date.now() },
+        persist: canRestore
+          ? { models: refreshed, checkedAt: Date.now() }
+          : null,
         update: () => {
           models = refreshed;
         },
@@ -105,7 +129,6 @@ async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
       `Endpoint: ${auth.auth.baseUrl ?? "unknown"}`,
       `Auth: ${auth.source ?? "configured"}`,
       `Models: ${count}`,
-      "Pricing: unknown (Pi displays zero because the catalog has no reliable resolved-route cost)",
     ].join("\n"),
     "info",
   );

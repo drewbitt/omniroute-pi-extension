@@ -1,6 +1,6 @@
-# OmniRoute Pi Extension
+# OmniRoute for Pi
 
-A native [Pi](https://pi.dev) provider for an OmniRoute gateway. It uses Pi's current provider/auth/catalog APIs, keeps OmniRoute model IDs unchanged, and routes requests through OmniRoute's OpenAI-compatible Chat Completions endpoint.
+Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gateway in [Pi](https://pi.dev). The extension loads the gateway's live model catalog and sends requests through Pi's built-in OpenAI Chat Completions transport.
 
 ## Install
 
@@ -8,69 +8,65 @@ A native [Pi](https://pi.dev) provider for an OmniRoute gateway. It uses Pi's cu
 pi install git:github.com/drewbitt/omniroute-pi-extension
 ```
 
-The extension targets `@earendil-works/pi-*` 0.84.2.
+Tested with Pi 0.84.2.
 
-## Configure
+## Set up
 
-The provider is always registered, so it appears in Pi's login UI even before it has models:
+You need a running, reachable [OmniRoute server](https://github.com/diegosouzapw/OmniRoute). Start Pi and run:
 
 ```text
 /login omniroute
 ```
 
-Enter the OmniRoute server URL (for example `http://127.0.0.1:20128`) and an API key. The key is optional for local/public servers. Pi stores the credential in its normal auth store; this extension never writes credentials or catalogs to `models.json`.
+Enter your OmniRoute URL, such as `http://127.0.0.1:20128`, and an API key if your server requires one. Then refresh the catalog and choose a model:
 
-Environment fallback is also supported:
+```text
+/omni sync
+/model
+```
+
+You can also set environment variables before starting Pi:
 
 ```bash
 export OMNIROUTE_BASE_URL=http://127.0.0.1:20128
-export OMNIROUTE_API_KEY=your-key   # optional for public/local servers
+export OMNIROUTE_API_KEY=your-key  # optional on servers without API-key auth
 ```
 
-Root URLs and URLs ending in `/v1` are both accepted and normalized to exactly one `/v1`.
+Both root URLs and URLs ending in `/v1` work.
 
 ## Commands
 
-- `/omni` or `/omni status` — show endpoint, auth source, cached model count, and pricing caveat.
-- `/omni sync` — force a live catalog refresh with Pi's public model registry.
-- `/omni help` — show command help.
+| Command | Description |
+| --- | --- |
+| `/omni` | Show the current endpoint and model count |
+| `/omni sync` | Refresh models from OmniRoute |
+| `/omni help` | Show command help |
+| `/login omniroute` | Change the endpoint or API key |
 
-Opening Pi's model picker and `pi update --models` also use the provider's normal refresh lifecycle.
+## How models are handled
 
-## Behavior
+OmniRoute remains the source of truth for model IDs, aliases, combos, `auto/*` routes, reasoning variants, visibility, and catalog metadata. The extension does not create or rename those entries. For chat-capable models exposed to Pi, the OmniRoute model ID is preserved unchanged.
 
-- Fetches authenticated `GET /v1/models?prefix=alias&configuredOnly=true` and accepts both `{ "data": [...] }` and bare-array responses.
-- Preserves every returned model ID exactly, including bare combo IDs, `auto/*`, and provider-prefixed IDs.
-- Filters only explicit non-conversational models and maps reasoning, vision, context, and output limits conservatively from catalog metadata.
-- Uses `openai-completions` and Pi's built-in streaming implementation; there is no custom prompt-tool protocol.
-- Uses Pi's generation-checked dynamic model store. Failed refreshes retain the last-known-good catalog. Stored catalogs are restored only when their endpoint matches the current credential, preventing endpoint-switch leakage.
-- Uses zeroes for Pi's required cost fields because `/v1/models` does not provide reliable resolved-route pricing. **Zero means unknown, not free**, especially for combos.
+Pi handles credentials, streaming, and tool calls. Secret-key catalogs are refreshed instead of being reused across credentials. The extension does not modify `models.json` or keep its own cache.
 
-## Migrating from md-riaz's extension
+## Moving from an older OmniRoute extension
 
-Older `md-riaz/omniroute-agent-extension` or `omniroute-pi-ext-integration` installs may leave a `providers.omni` entry with `api: "omni-prompt-tools"` in `~/.pi/agent/models.json`. That identifier is invalid in current Pi and is the root cause described in md-riaz issues #7/#8 and PR #9.
+Remove the old package before installing this one. Older releases may also leave a `providers.omni` entry with `"api": "omni-prompt-tools"` in `~/.pi/agent/models.json`. That API no longer exists in Pi.
 
-This extension registers a separate `omniroute` provider and intentionally does not edit user-owned `models.json`. Before use:
-
-1. remove the old extension/package;
-2. back up `~/.pi/agent/models.json`;
-3. remove only the legacy `providers.omni` block if it uses `omni-prompt-tools` (preserve unrelated providers and overrides);
-4. run `/login omniroute`, then `/omni sync`.
-
-Do not copy a plaintext legacy key into this repository; let Pi's login flow store it.
+Back up the file, remove only that legacy `providers.omni` block, then run `/login omniroute`. Leave unrelated providers and model overrides alone.
 
 ## Development
+
+Development requires Node.js 22.19 or newer.
 
 ```bash
 npm install
 npm run check
 ```
 
-`npm run check` runs strict TypeScript checking, syntax checks, and the Node test suite. Tests cover loader registration, environment/login auth, URL normalization, dynamic refresh/offline restore/endpoint isolation, cancellation and catalog failures, exact IDs, and Chat Completions text/tool round-trips.
+The check command runs the TypeScript compiler, syntax checks, and tests for provider loading, authentication, catalog refresh, persistence, cancellation, and Chat Completions tool calls.
 
-## Provenance
-
-This repository is a fork of [xz-dev/omniroute-pi-extension](https://github.com/xz-dev/omniroute-pi-extension), whose Pi-native provider lifecycle and test approach are the foundation. Migration analysis also credits [md-riaz/omniroute-agent-extension](https://github.com/md-riaz/omniroute-agent-extension) and contributor RaviTharuma's [PR #9](https://github.com/md-riaz/omniroute-agent-extension/pull/9).
+This project is based on [xz-dev/omniroute-pi-extension](https://github.com/xz-dev/omniroute-pi-extension). See [CONTEXT.md](./CONTEXT.md) for implementation notes and history.
 
 ## License
 
