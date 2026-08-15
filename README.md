@@ -8,6 +8,8 @@ Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gatewa
 pi install git:github.com/drewbitt/omniroute-pi-extension
 ```
 
+Restart Pi after installation, or run `/reload` in an existing session.
+
 Tested with Pi 0.84.2.
 
 ## Set up
