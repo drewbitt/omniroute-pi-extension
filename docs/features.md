@@ -1,56 +1,33 @@
-# OmniRoute Pi Extension Features
+# Feature contract
 
-## Complete public provider registration
+## Native Pi provider
 
-- Activates only with a non-empty `OMNIROUTE_BASE_URL`, normalized by trimming trailing slashes.
-- Registers exactly one complete `Provider<"openai-responses">` through `pi.registerProvider(provider)`.
-- Uses only public Pi 0.83 API seams from `@earendil-works/pi-ai/compat`: `createProvider`, `envApiKeyAuth`, `openAIResponsesApi`, `Model`, and `RefreshModelsContext`. Pi's extension loader aliases this compatibility entrypoint to the host-provided Pi AI implementation.
-- The provider has ID `omniroute`, display name `OmniRoute`, no static models, public Responses `stream`/`streamSimple` behavior, and `envApiKeyAuth("OmniRoute API key", ["OMNIROUTE_API_KEY"])`.
-- Does not attach session lifecycle handlers, manually register provider configs, import Pi internals, or bundle a second Pi core.
+The extension unconditionally registers one complete `Provider<"openai-completions">` named `omniroute`. It uses Pi's provider auth, dynamic model refresh, persisted model store, and built-in Chat Completions streams. It does not register a custom API identifier, write `models.json`, or implement a custom stream parser.
 
-## Structure
+## Authentication
 
-`index.ts` visibly reads configuration, constructs and registers the complete provider, and composes the gateway catalog snapshot with model normalization. `src/gateway-catalog.ts` owns configuration validation and atomic gateway discovery; `src/model-normalizer.ts` owns conversion of that `CatalogSnapshot` to Pi models.
+`/login omniroute` prompts for an HTTP(S) server URL and an optional key. The normalized `/v1` URL is stored in the provider credential's environment and the key in Pi's credential store. `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY` are ambient fallbacks. A configured key always produces `Authorization: Bearer <key>`; public/local servers receive a harmless placeholder so Pi and OpenAI-compatible clients have a configured credential.
 
-## Pi-owned lifecycle
+## Catalog discovery
 
-`createProvider` is the owner of dynamic catalog lifecycle:
+The sole discovery dependency is authenticated `GET <baseUrl>/models?prefix=alias&configuredOnly=true`, where `baseUrl` ends in `/v1`. Both OpenAI's `{data:[...]}` envelope and a bare array are accepted. Network errors, non-2xx responses, malformed JSON, invalid envelopes, or invalid row shapes reject the refresh. Abort signals are passed directly to `fetch`.
 
-- restores Pi's provider-scoped dynamic model snapshot before each fetch;
-- persists a successful fresh list and timestamp;
-- de-duplicates concurrent refresh calls;
-- retains/restores the prior store snapshot when Pi `Models.refresh` handles a failed network refresh through its offline retry;
-- receives Pi's effective credential, `allowNetwork`, and parent abort signal.
+No management, pricing, OpenCode, or VS Code endpoint is required. Listing is not treated as proof that every route is callable.
 
-The extension does **not** implement its own cache files, TTL/four-hour freshness, `force` branching, legacy cache import, base-URL store isolation/deletion, store payload projection/sanitization, or offline fallback. Pi's public store semantics are accepted as the product lifecycle.
+## Model normalization
 
-## Atomic gateway discovery
+- Model IDs are byte-for-byte catalog IDs. Bare combos are not prefixed or slugged.
+- Explicit embedding/image/video/audio model types and explicit non-text output models are omitted.
+- Exact duplicate IDs select the row with vision support, then larger context/output limits.
+- Reasoning is enabled only by explicit `capabilities.reasoning`, `capabilities.thinking`, or a recognized adjustable `capabilities.effort_tiers` value; `none` alone fails closed.
+- Vision is enabled only by image input or explicit vision/attachment capability.
+- Positive reported limits are used; defaults are 128,000 context and 16,384 output, with output capped to context.
+- Required Pi cost fields are zero because reliable resolved-route pricing is unavailable. This represents unknown cost, not free service.
 
-- Primary request: `GET {baseUrl}/models?prefix=alias&configuredOnly=true`; it requests public alias IDs backed by an eligible configured connection and solely owns model IDs, visibility, display names, modalities, context limits, output limits, and primary `capabilities.effort_tiers`.
-- Derived grouped VS Code metadata request: `/api/v1/vscode/_/models`; it may contribute recognized reasoning effort only.
-- Both requests start concurrently and are mandatory participants. A network error, non-2xx response, invalid JSON/envelope/row aborts the sibling and rejects. No partial fresh list is returned.
-- Both endpoints accept `{ "data": [] }`; dual empty success is a valid empty fresh snapshot.
-- External cancellation and deadlines come only from Pi's parent `RefreshModelsContext.signal`; endpoint failure aborts the sibling through its linked request controller. The plugin does not impose its own elapsed-time discovery deadline.
-- Errors are fixed-category and sanitized: no URL, status text, response body, Authorization header, credential, or parser/transport detail is exposed. Parent abort uses sanitized `AbortError`.
+## Persistence and endpoint isolation
 
-## Model and reasoning normalization
+Pi owns the provider-scoped model store and generation-checked publication. A refresh restores stored models only when provider ID, API, and normalized model `baseUrl` match the current credential. An endpoint switch therefore starts with an empty catalog instead of briefly exposing the previous endpoint's models. A failed online refresh retains a matching restored last-known-good catalog.
 
-- Retain conversational text rows only: exclude `embedding`, `image`, `video`, and `audio` types; reject declared non-text output; filter before deduplication so a valid chat duplicate survives.
-- Select the better duplicate by image-input capability, then larger context/output limits.
-- Exclude exactly `codex/gpt-5.6-sol-ultra`, `cx/gpt-5.6-sol-ultra`, `codex/gpt-5.6-terra-ultra`, and `cx/gpt-5.6-terra-ultra`. No provider/root/DeepSeek heuristic is applied.
-- Every returned row is a full `Model<"openai-responses">` with `provider`, `id`, `api`, `baseUrl`, input, zero cost fields, and context/output limits (128000/16384 defaults). A non-empty primary `name` distinct from `id` is preferred; otherwise display falls back to `root`, then `id`.
-- Fresh effort union: primary `effort_tiers`; recognized suffixes (`-none`, `-low`, `-medium`, `-high`, `-xhigh`, `-max`) when the exact base ID is present; plus a provider-independent compatibility exception that builds a same-provider base for `gpt-5.6`/`gpt-5-6` Luna, Sol, or Terra effort-only families. Supplemental strict `id`/`root`/`parent` matches follow; root fallback is used only with no strict match and exactly one contributing supplemental root.
-- `ultra` is ignored. `none` remains foldable but does not itself enable reasoning. Missing adjustable effort fails closed to `reasoning: false` without `thinkingLevelMap`.
+## Commands
 
-## Availability
-
-- Pi's model runtime resolves this complete provider normally.
-- Ordinary child workers sharing the parent's model runtime and standalone headless services using the same Pi models store restore OmniRoute through the public lifecycle.
-- Intentional extension exclusion or isolated runtimes remain outside this guarantee.
-
-## Configuration
-
-| Environment variable | Purpose |
-| --- | --- |
-| `OMNIROUTE_BASE_URL` | Required OmniRoute endpoint. |
-| `OMNIROUTE_API_KEY` | Public Pi env credential fallback. |
+`/omni status` reads public provider auth and current provider models. `/omni sync` calls `ctx.modelRegistry.refresh({ providers: ["omniroute"], force: true, signal })`. Commands do not maintain independent state.

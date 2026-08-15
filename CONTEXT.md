@@ -2,25 +2,23 @@
 
 ## Language
 
-**OmniRoute Provider**: A complete public Pi `Provider<"openai-responses">` backed by an OmniRoute-compatible gateway.
-_Avoid_: legacy provider config registration, generic proxy
+**OmniRoute Provider**: A complete Pi `Provider<"openai-completions">` backed by an OmniRoute gateway.
+_Avoid_: legacy provider-config registration, custom API identifiers, Responses-only transport.
 
-**Model Catalog**: The fresh set of full Pi `Model` values returned by the gateway adapter.
-_Avoid_: extension cache, custom store projection
+**Model Catalog**: The authenticated public `/v1/models` result normalized into complete Pi models.
+_Avoid_: extension-owned cache files, management endpoints as mandatory dependencies.
 
-**Pi Provider Lifecycle**: `createProvider` and Pi `Models` own persisted-store restore/write, credential resolution, in-flight refresh de-duplication, refresh policy, offline initialization, and fallback after a failed online refresh.
-_Avoid_: extension-owned freshness, migration, URL isolation, fallback
+**Pi Provider Lifecycle**: Pi owns credentials, generation-checked catalog publication, persistence, refresh scheduling, and last-known-good restore. The extension filters restore by normalized endpoint.
+_Avoid_: direct `models.json` mutation, plaintext extension config, automatic legacy migration.
 
-**Atomic Discovery**: Concurrent required primary alias and grouped VS Code supplemental catalog requests. Both must succeed before one fresh catalog can publish.
-_Avoid_: optional supplemental metadata, partial snapshot
+**Exact Routing ID**: Every Pi model ID is the exact OmniRoute catalog ID.
+_Avoid_: `combo/` prefixing, OpenCode provider prefixes, suffix folding, synthesized IDs.
 
-**Reasoning Effort Union**: Primary tiers plus verified exact-base suffixes plus strict supplemental identity; unique-root fallback only after strict matching misses. `ultra` is ignored; none-only fails closed.
-_Avoid_: provider/root/DeepSeek heuristics, inferred tiers
-
-**Subagent / Headless Availability**: Standard Pi provider resolution for ordinary shared-modelRuntime workers and standalone services restoring Pi's provider store.
-_Avoid_: TUI/session-hook-only provider
+**Unknown Pricing**: Pi's required numeric costs are zero because resolved-route pricing is not available.
+_Avoid_: describing zero as free.
 
 ## Structure
 
-- `index.ts` visibly reads validated configuration, constructs the complete public provider, fetches a catalog snapshot, normalizes models, and registers it.
-- `src/gateway-catalog.ts` owns gateway configuration and atomic catalog retrieval; `src/model-normalizer.ts` maps the resulting `CatalogSnapshot` to full Pi models.
+- `index.ts` constructs the provider and registers `/omni` status/sync commands.
+- `src/gateway-catalog.ts` owns URL normalization, native auth, and authenticated catalog retrieval.
+- `src/model-normalizer.ts` conservatively converts gateway rows to Pi Chat Completions models.

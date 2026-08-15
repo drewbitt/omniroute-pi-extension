@@ -1,13 +1,15 @@
-# Delegate OmniRoute dynamic-catalog lifecycle to Pi
+# Delegate catalog persistence to Pi with endpoint isolation
 
 ## Decision
 
-The OmniRoute extension registers a complete provider through Pi's public `createProvider` and `pi.registerProvider(provider)` APIs. Pi owns dynamic catalog store restoration and writes, refresh scheduling, effective credential resolution, in-flight refresh de-duplication, offline/cache-only behavior, and fallback after a failed online refresh.
+The extension implements a complete native provider and uses Pi's `RefreshModelsContext.publish()` for all in-memory and persisted catalog updates. It does not own a cache file or mutate `models.json`.
 
-The extension contains only gateway-specific discovery and normalization. Its `fetchModels(context)` performs the mandatory concurrent primary and supplemental requests and returns a complete fresh `Model<"openai-responses">[]` only on dual success.
+Before network discovery, a stored snapshot is restored only when every accepted model belongs to the `omniroute` provider, uses `openai-completions`, and has the same normalized `baseUrl` as the effective credential. A changed endpoint restores no old models. Successful discovery persists the complete normalized snapshot; failure leaves a matching restored snapshot active.
+
+## Rationale
+
+Pi 0.84.2 provides credential-scoped refresh context, cancellation, generation-checked publication, and a provider model store. Reimplementing those mechanisms would add races and secret-handling risks. Provider stores are keyed by provider ID rather than endpoint, so the extension must perform the small gateway-specific endpoint check.
 
 ## Consequences
 
-Remove extension-owned cache paths, file I/O, hash/path logic, four-hour freshness, `force` handling, legacy cache migration, base-URL store isolation, custom store parsing/sanitization, and custom offline/fallback lifecycle.
-
-A Pi provider store is provider-scoped. Changing `OMNIROUTE_BASE_URL` does not cause the extension to delete or reinterpret the store; Pi's public lifecycle is the accepted behavior. Gateway request and model-normalization contracts remain unchanged and are documented in [`../features.md`](../features.md).
+Offline startup works from a last-known-good snapshot for the same endpoint. Switching endpoints while offline intentionally produces an empty catalog until the new endpoint is reached. Legacy `omni-prompt-tools` cleanup remains an explicit documented user action rather than an automatic host-config rewrite.
