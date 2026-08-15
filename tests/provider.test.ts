@@ -281,8 +281,7 @@ describe("OmniRoute provider", () => {
       ["text", "image"],
     );
     assert.equal(
-      provider.getModels().find((model) => model.id === "none-only")
-        ?.reasoning,
+      provider.getModels().find((model) => model.id === "none-only")?.reasoning,
       false,
     );
     assert.equal(
