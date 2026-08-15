@@ -298,6 +298,9 @@ describe("OmniRoute provider", () => {
           row("non-text-output", {
             output_modalities: ["image"],
           }),
+          row("reranker", { type: "rerank", output_modalities: ["text"] }),
+          row("moderator", { type: "moderation" }),
+          row("music-generator", { type: "music" }),
           row("capped-output", {
             context_length: 2_000,
             max_output_tokens: 8_000,

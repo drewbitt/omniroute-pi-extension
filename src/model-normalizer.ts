@@ -3,7 +3,15 @@ import type { OmniRouteModel } from "./gateway-catalog.ts";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
-const NON_CHAT_TYPES = new Set(["embedding", "image", "video", "audio"]);
+const NON_CHAT_TYPES = new Set([
+  "embedding",
+  "image",
+  "video",
+  "audio",
+  "rerank",
+  "moderation",
+  "music",
+]);
 const EFFORTS = new Set([
   "none",
   "minimal",
@@ -26,7 +34,9 @@ export function normalizeModels(
   for (const row of rows) {
     if (!isConversational(row)) continue;
     if (seen.has(row.id)) {
-      throw new Error(`OmniRoute catalog contains duplicate model ID: ${row.id}`);
+      throw new Error(
+        `OmniRoute catalog contains duplicate model ID: ${row.id}`,
+      );
     }
     seen.add(row.id);
     models.push(row);
@@ -117,7 +127,6 @@ function isConversational(model: OmniRouteModel): boolean {
     !model.output_modalities?.length || model.output_modalities.includes("text")
   );
 }
-
 
 function price(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0

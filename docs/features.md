@@ -17,7 +17,7 @@ No management, OpenCode, or VS Code endpoint is required. Listing is not treated
 ## Model normalization
 
 - Model IDs are byte-for-byte catalog IDs. Bare combos are not prefixed or slugged.
-- Explicit embedding/image/video/audio model types and explicit non-text output models are omitted.
+- Explicit embedding, image, video, audio, rerank, moderation, and music model types are omitted, as are explicit non-text output models.
 - Exact duplicate conversational IDs reject the refresh. OmniRoute owns catalog deduplication, so the extension does not invent a merged capability profile.
 - Reasoning is enabled only by explicit `capabilities.reasoning`, `capabilities.thinking`, or a recognized adjustable `capabilities.effort_tiers` value; `none` alone fails closed.
 - Vision is enabled only by image input or explicit vision/attachment capability.
