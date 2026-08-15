@@ -99,8 +99,9 @@ export function createOmniRouteAuth(): ApiKeyAuth {
     },
     async check({ ctx, credential }) {
       const configured =
-        credentialBaseUrl(credential) ??
-        normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "");
+        credential?.env?.[BASE_URL_ENV] !== undefined
+          ? credentialBaseUrl(credential)
+          : normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "");
       return configured
         ? {
             type: "api_key",
@@ -110,8 +111,9 @@ export function createOmniRouteAuth(): ApiKeyAuth {
     },
     async resolve({ ctx, credential }) {
       const baseUrl =
-        credentialBaseUrl(credential) ??
-        normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "");
+        credential?.env?.[BASE_URL_ENV] !== undefined
+          ? credentialBaseUrl(credential)
+          : normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "");
       if (!baseUrl) return undefined;
       const candidate = credential
         ? credential.key

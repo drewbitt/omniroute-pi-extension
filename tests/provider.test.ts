@@ -218,6 +218,44 @@ describe("OmniRoute provider", () => {
     assert.equal(blankEnvironmentKey?.auth.apiKey, PUBLIC_API_KEY);
   });
 
+  it("rejects invalid credential endpoints without breaking runtime key overrides", async () => {
+    const server = await fixture({ payload: { data: [] } });
+    process.env[BASE_URL_ENV] = server.baseUrl;
+    const auth = createOmniRouteAuth();
+    const ctx = {
+      env: async (name: string) =>
+        name === BASE_URL_ENV ? server.baseUrl : undefined,
+      fileExists: async () => false,
+    };
+    const signal = new AbortController().signal;
+    const runtimeKey: ApiKeyCredential = {
+      type: "api_key",
+      key: "runtime-key",
+    };
+    const resolved = await auth.resolve!({
+      ctx,
+      credential: runtimeKey,
+      signal,
+    });
+    assert.equal(resolved?.auth.baseUrl, server.baseUrl);
+    assert.equal(resolved?.auth.apiKey, "runtime-key");
+
+    const invalid: ApiKeyCredential = {
+      type: "api_key",
+      key: "stored-secret",
+      env: { [BASE_URL_ENV]: "not-an-http-url" },
+    };
+    assert.equal(await auth.check!({ ctx, credential: invalid, signal }), undefined);
+    assert.equal(
+      await auth.resolve!({ ctx, credential: invalid, signal }),
+      undefined,
+    );
+    const provider = createOmniRouteProvider();
+    await provider.refreshModels!(refreshHarness({ credential: invalid }).context);
+    assert.deepEqual(ids(provider), []);
+    assert.equal(server.requests, 0);
+  });
+
   it("uses Pi credential resolution and restores a public catalog offline", async () => {
     const server = await fixture({ payload: { data: [row("pi-runtime")] } });
     process.env.OMNIROUTE_BASE_URL = server.baseUrl;

@@ -44,8 +44,9 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
       const credential =
         context.credential?.type === "api_key" ? context.credential : undefined;
       const baseUrl =
-        credentialBaseUrl(credential) ??
-        normalizeBaseUrl(process.env[BASE_URL_ENV] ?? "");
+        credential?.env?.[BASE_URL_ENV] !== undefined
+          ? credentialBaseUrl(credential)
+          : normalizeBaseUrl(process.env[BASE_URL_ENV] ?? "");
       if (!baseUrl) {
         if (context.stored || models.length > 0) {
           await context.publish({

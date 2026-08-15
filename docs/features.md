@@ -6,7 +6,7 @@ The extension unconditionally registers one complete `Provider<"openai-completio
 
 ## Authentication
 
-`/login omniroute` prompts for an HTTP(S) server URL and an optional key. The normalized `/v1` URL is stored in the provider credential's environment and the key in Pi's credential store. `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY` are fallbacks only when no stored credential is selected. A configured key produces `Authorization: Bearer <key>`; public/local servers receive a harmless placeholder so Pi and OpenAI-compatible clients have a configured credential.
+`/login omniroute` prompts for an HTTP(S) server URL and an optional key. The normalized `/v1` URL is stored in the provider credential's environment and the key in Pi's credential store. Stored fields take precedence; missing fields may come from `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`, which also supports Pi's runtime API-key override. An explicitly stored but invalid endpoint fails closed rather than falling back. Treat ambient environment values as trusted provider configuration. A configured key produces `Authorization: Bearer <key>`; public/local servers receive a harmless placeholder so Pi and OpenAI-compatible clients have a configured credential.
 
 ## Catalog discovery
 
