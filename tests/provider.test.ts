@@ -103,12 +103,20 @@ function refreshHarness(options: {
   signal?: AbortSignal;
 }) {
   let stored = options.stored;
+  const persistenceActions: ("omitted" | "delete" | "snapshot")[] = [];
   const context: RefreshModelsContext = {
     credential: options.credential,
     stored,
     allowNetwork: options.allowNetwork ?? true,
     signal: options.signal ?? new AbortController().signal,
     async publish(publication) {
+      persistenceActions.push(
+        publication.persist === undefined
+          ? "omitted"
+          : publication.persist === null
+            ? "delete"
+            : "snapshot",
+      );
       if (publication.persist !== undefined)
         stored = publication.persist ?? undefined;
       publication.update?.();
@@ -119,6 +127,9 @@ function refreshHarness(options: {
     context,
     get stored() {
       return stored;
+    },
+    get persistenceActions(): readonly ("omitted" | "delete" | "snapshot")[] {
+      return [...persistenceActions];
     },
   };
 }
@@ -286,6 +297,7 @@ describe("OmniRoute provider", () => {
     assert.equal(server.auth, "Bearer secret");
     assert.equal(server.search, "?prefix=alias&configuredOnly=true");
     assert.equal(harness.stored, undefined);
+    assert.deepEqual(harness.persistenceActions, ["omitted", "omitted"]);
   });
 
   it("filters non-chat rows and handles edge metadata", async () => {
@@ -359,6 +371,7 @@ describe("OmniRoute provider", () => {
     });
     await online.refreshModels!(first.context);
     assert(first.stored);
+    assert.deepEqual(first.persistenceActions, ["omitted", "snapshot"]);
 
     const restored = createOmniRouteProvider();
     await restored.refreshModels!(
@@ -379,6 +392,7 @@ describe("OmniRoute provider", () => {
     await restricted.refreshModels!(restrictedHarness.context);
     assert.deepEqual(ids(restricted), []);
     assert.equal(restrictedHarness.stored, undefined);
+    assert.deepEqual(restrictedHarness.persistenceActions, ["delete"]);
 
     const switched = createOmniRouteProvider();
     await switched.refreshModels!(
@@ -482,35 +496,32 @@ describe("OmniRoute provider", () => {
     const server = await fixture(response);
     const provider = createOmniRouteProvider();
     const current = credential(server.baseUrl, "restricted-key");
-    await provider.refreshModels!(
-      refreshHarness({ credential: current }).context,
-    );
+    const initial = refreshHarness({ credential: current });
+    await provider.refreshModels!(initial.context);
     assert.deepEqual(ids(provider), ["restricted"]);
+    assert.deepEqual(initial.persistenceActions, ["omitted", "omitted"]);
 
-    await provider.refreshModels!(
-      refreshHarness({
-        credential: current,
-        allowNetwork: false,
-      }).context,
-    );
+    const offline = refreshHarness({
+      credential: current,
+      allowNetwork: false,
+    });
+    await provider.refreshModels!(offline.context);
     assert.deepEqual(ids(provider), ["restricted"]);
+    assert.deepEqual(offline.persistenceActions, []);
 
     response.status = 503;
-    await assert.rejects(
-      provider.refreshModels!(
-        refreshHarness({ credential: current }).context,
-      ),
-      /HTTP 503/,
-    );
+    const failing = refreshHarness({ credential: current });
+    await assert.rejects(provider.refreshModels!(failing.context), /HTTP 503/);
     assert.deepEqual(ids(provider), ["restricted"]);
+    assert.deepEqual(failing.persistenceActions, []);
 
-    await provider.refreshModels!(
-      refreshHarness({
-        credential: credential(server.baseUrl, "different-key"),
-        allowNetwork: false,
-      }).context,
-    );
+    const changed = refreshHarness({
+      credential: credential(server.baseUrl, "different-key"),
+      allowNetwork: false,
+    });
+    await provider.refreshModels!(changed.context);
     assert.deepEqual(ids(provider), []);
+    assert.deepEqual(changed.persistenceActions, ["omitted"]);
   });
 
   it("propagates cancellation without publishing", async () => {
@@ -559,6 +570,7 @@ describe("OmniRoute provider", () => {
     });
     await provider.refreshModels!(populated.context);
     assert(populated.stored);
+    assert.deepEqual(populated.persistenceActions, ["omitted", "snapshot"]);
 
     delete process.env.OMNIROUTE_BASE_URL;
     const unconfigured = refreshHarness({
@@ -568,5 +580,6 @@ describe("OmniRoute provider", () => {
     await provider.refreshModels!(unconfigured.context);
     assert.deepEqual(ids(provider), []);
     assert.equal(unconfigured.stored, undefined);
+    assert.deepEqual(unconfigured.persistenceActions, ["delete"]);
   });
 });

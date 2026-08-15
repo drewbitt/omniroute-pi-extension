@@ -10,6 +10,7 @@ import {
   BASE_URL_ENV,
   createOmniRouteAuth,
   credentialBaseUrl,
+  DEFAULT_BASE_URL,
   fetchModelCatalog,
   normalizeBaseUrl,
   PUBLIC_API_KEY,
@@ -19,7 +20,6 @@ import { normalizeModels } from "./src/model-normalizer.ts";
 export const PROVIDER_ID = "omniroute";
 const PROVIDER_NAME = "OmniRoute";
 const PROVIDER_API = "openai-completions" as const;
-const FALLBACK_BASE_URL = "http://127.0.0.1:20128/v1";
 
 function catalogScope(baseUrl: string, apiKey: string): string {
   return createHash("sha256")
@@ -37,14 +37,12 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
   return {
     id: PROVIDER_ID,
     name: PROVIDER_NAME,
-    baseUrl: FALLBACK_BASE_URL,
+    baseUrl: DEFAULT_BASE_URL,
     auth: { apiKey: createOmniRouteAuth() },
     getModels: () => models,
     async refreshModels(context) {
       const credential =
-        context.credential?.type === "api_key"
-          ? context.credential
-          : undefined;
+        context.credential?.type === "api_key" ? context.credential : undefined;
       const baseUrl =
         credentialBaseUrl(credential) ??
         normalizeBaseUrl(process.env[BASE_URL_ENV] ?? "");
@@ -87,13 +85,9 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
           }))
         )
           return;
-      } else if (
-        activeScope !== requestedScope ||
-        models.some((model) => model.baseUrl !== baseUrl)
-      ) {
+      } else if (activeScope !== requestedScope) {
         if (
           !(await context.publish({
-            ...(canRestore ? {} : { persist: null }),
             update: () => {
               models = [];
               activeScope = undefined;
@@ -103,7 +97,7 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
           return;
       }
 
-      if (!context.allowNetwork || context.signal.aborted || !apiKey) return;
+      if (!context.allowNetwork || context.signal.aborted) return;
       const catalog = await fetchModelCatalog(
         { baseUrl },
         apiKey,
@@ -112,9 +106,9 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
       if (context.signal.aborted) return;
       const refreshed = normalizeModels(PROVIDER_ID, baseUrl, catalog);
       await context.publish({
-        persist: canRestore
-          ? { models: refreshed, checkedAt: Date.now() }
-          : null,
+        ...(canRestore
+          ? { persist: { models: refreshed, checkedAt: Date.now() } }
+          : {}),
         update: () => {
           models = refreshed;
           activeScope = requestedScope;
