@@ -42,10 +42,13 @@ before(async () => {
 });
 
 after(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+    server.closeAllConnections();
+  });
 });
 
-it("streams text and an exact tool round-trip with model and bearer auth preserved", async () => {
+it("streams text and an exact tool round-trip with model and bearer auth preserved", { timeout: 5000 }, async () => {
   const provider = createOmniRouteProvider();
   assert(provider.stream);
   const model = {
