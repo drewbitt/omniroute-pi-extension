@@ -54,10 +54,15 @@ async function fixture(response: {
   stallBody?: boolean;
 }) {
   let requests = 0;
+  let resolveRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resolveRequested = resolve;
+  });
   let auth = "";
   let search = "";
   const server = http.createServer((request, reply) => {
     requests += 1;
+    resolveRequested();
     auth = String(request.headers.authorization ?? "");
     search = new URL(request.url ?? "/", "http://local").search;
     if (response.hold) return;
@@ -80,6 +85,7 @@ async function fixture(response: {
   assert(address && typeof address === "object");
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    requested,
     get requests() {
       return requests;
     },
@@ -524,7 +530,7 @@ describe("OmniRoute provider", () => {
     assert.deepEqual(changed.persistenceActions, ["omitted"]);
   });
 
-  it("propagates cancellation without publishing", async () => {
+  it("propagates cancellation without publishing", { timeout: 5000 }, async () => {
     const server = await fixture({ hold: true });
     const controller = new AbortController();
     const provider = createOmniRouteProvider();
@@ -533,8 +539,7 @@ describe("OmniRoute provider", () => {
       signal: controller.signal,
     });
     const pending = provider.refreshModels!(harness.context);
-    while (server.requests === 0)
-      await new Promise((resolve) => setTimeout(resolve, 1));
+    await server.requested;
     controller.abort();
     await assert.rejects(
       pending,
@@ -543,24 +548,27 @@ describe("OmniRoute provider", () => {
     assert.equal(harness.stored, undefined);
   });
 
-  it("propagates cancellation while reading the response body", async () => {
-    const server = await fixture({ stallBody: true });
-    const controller = new AbortController();
-    const provider = createOmniRouteProvider();
-    const pending = provider.refreshModels!(
-      refreshHarness({
-        credential: credential(server.baseUrl),
-        signal: controller.signal,
-      }).context,
-    );
-    while (server.requests === 0)
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    controller.abort();
-    await assert.rejects(
-      pending,
-      (error) => error instanceof Error && error.name === "AbortError",
-    );
-  });
+  it(
+    "propagates cancellation while reading the response body",
+    { timeout: 5000 },
+    async () => {
+      const server = await fixture({ stallBody: true });
+      const controller = new AbortController();
+      const provider = createOmniRouteProvider();
+      const pending = provider.refreshModels!(
+        refreshHarness({
+          credential: credential(server.baseUrl),
+          signal: controller.signal,
+        }).context,
+      );
+      await server.requested;
+      controller.abort();
+      await assert.rejects(
+        pending,
+        (error) => error instanceof Error && error.name === "AbortError",
+      );
+    },
+  );
 
   it("clears stale models and storage when configuration is removed", async () => {
     const server = await fixture({ payload: { data: [row("stale")] } });
