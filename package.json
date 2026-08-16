@@ -1,6 +1,6 @@
 {
   "name": "omniroute-pi-extension",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Native OmniRoute provider extension for Pi with live model discovery.",
   "private": true,
   "license": "MIT",

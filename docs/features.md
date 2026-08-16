@@ -22,7 +22,7 @@ No management, OpenCode, or VS Code endpoint is required. Listing is not treated
 - Reasoning is enabled only by explicit `capabilities.reasoning`, `capabilities.thinking`, or a recognized adjustable `capabilities.effort_tiers` value; `none` alone fails closed.
 - Vision is enabled only by image input or explicit vision/attachment capability.
 - Positive reported limits are used. Missing limits use Pi's compatibility defaults of 128,000 context and 16,384 output, with output capped to context.
-- Explicit `/v1/models` pricing is mapped from OmniRoute's per-million-token fields. Missing or route-dependent prices remain zero, which means unknown rather than free.
+- Explicit `/v1/models` pricing is mapped from OmniRoute's per-million-token fields, enriched from the management `GET /api/pricing` table when present. Enrichment resolves by exact provider id, then a small catalog-prefix → namespace alias table (Command Code's `cmd`/`command-code`/`cc-provider` rows use the `cc` rates), then an unambiguous basename. Rows that stay unpriced (missing rates, ambiguous basenames, or no management access) map to zero — unknown rather than free. The management call is best-effort: discovery never depends on it.
 - An explicit catalog name is used when present; otherwise the exact routing ID is the display name.
 
 ## Persistence and endpoint isolation

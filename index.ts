@@ -12,10 +12,12 @@ import {
   credentialBaseUrl,
   DEFAULT_BASE_URL,
   fetchModelCatalog,
+  fetchPricingTable,
   normalizeBaseUrl,
   PUBLIC_API_KEY,
 } from "./src/gateway-catalog.ts";
 import { normalizeModels } from "./src/model-normalizer.ts";
+import { applyPricingTable, parsePricingTable } from "./src/pricing-merge.ts";
 
 export const PROVIDER_ID = "omniroute";
 const PROVIDER_NAME = "OmniRoute";
@@ -106,7 +108,20 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
         context.signal,
       );
       if (context.signal.aborted) return;
-      const refreshed = normalizeModels(PROVIDER_ID, baseUrl, catalog);
+      // Best-effort pricing enrichment from the management table. Any
+      // failure (no management rights, endpoint absent, parse error) keeps
+      // the original catalog rows — discovery never depends on this.
+      const pricingPayload = await fetchPricingTable(
+        { baseUrl },
+        apiKey,
+        context.signal,
+      );
+      if (context.signal.aborted) return;
+      const enriched = applyPricingTable(
+        catalog,
+        parsePricingTable(pricingPayload),
+      );
+      const refreshed = normalizeModels(PROVIDER_ID, baseUrl, enriched);
       await context.publish({
         persist: { models: refreshed, checkedAt: Date.now() },
         update: () => {

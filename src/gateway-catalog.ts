@@ -99,9 +99,9 @@ export function createOmniRouteAuth(): ApiKeyAuth {
     },
     async check({ ctx, credential }) {
       const configured =
-        credential?.env?.[BASE_URL_ENV] !== undefined
-          ? credentialBaseUrl(credential)
-          : normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "");
+        credential?.env?.[BASE_URL_ENV] === undefined
+          ? normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "")
+          : credentialBaseUrl(credential);
       return configured
         ? {
             type: "api_key",
@@ -111,9 +111,9 @@ export function createOmniRouteAuth(): ApiKeyAuth {
     },
     async resolve({ ctx, credential }) {
       const baseUrl =
-        credential?.env?.[BASE_URL_ENV] !== undefined
-          ? credentialBaseUrl(credential)
-          : normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "");
+        credential?.env?.[BASE_URL_ENV] === undefined
+          ? normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "")
+          : credentialBaseUrl(credential);
       if (!baseUrl) return undefined;
       const candidate = credential
         ? credential.key
@@ -184,6 +184,63 @@ export async function fetchModelCatalog(
     throw new Error("OmniRoute model discovery returned an invalid catalog");
   }
   return rows;
+}
+
+/** Management endpoint root: strip the trailing `/v1` (e.g. `.../v1` → `...`). */
+export function managementBaseUrl(baseUrl: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return undefined;
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.at(-1)?.toLowerCase() === "v1") parts.pop();
+  url.pathname = `/${parts.join("/")}`;
+  return url.toString().replace(/\/$/, "");
+}
+
+/**
+ * Best-effort fetch of the management pricing table (`GET /api/pricing`).
+ * Returns `null` on any failure so catalog discovery never depends on it;
+ * aborts propagate as AbortError.
+ */
+export async function fetchPricingTable(
+  config: OmniRouteConfig,
+  apiKey: string,
+  signal: AbortSignal,
+): Promise<unknown | null> {
+  let url: URL;
+  try {
+    const root = managementBaseUrl(config.baseUrl);
+    if (!root) return null;
+    url = new URL(`${root}/api/pricing`);
+  } catch {
+    return null;
+  }
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal,
+    });
+  } catch (error) {
+    if (
+      signal.aborted ||
+      (error instanceof Error && error.name === "AbortError")
+    )
+      throw abortError();
+    return null;
+  }
+  if (!response.ok) return null;
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

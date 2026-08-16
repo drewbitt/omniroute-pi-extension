@@ -50,10 +50,13 @@ function row(id: string, extra: Record<string, unknown> = {}) {
 async function fixture(response: {
   status?: number;
   payload?: unknown;
+  pricing?: unknown;
+  pricingStatus?: number;
   hold?: boolean;
   stallBody?: boolean;
 }) {
   let requests = 0;
+  let pricingRequests = 0;
   let resolveRequested!: () => void;
   const requested = new Promise<void>((resolve) => {
     resolveRequested = resolve;
@@ -63,9 +66,29 @@ async function fixture(response: {
   const server = http.createServer((request, reply) => {
     requests += 1;
     resolveRequested();
+    const url = new URL(request.url ?? "/", "http://local");
+    const isPricing = url.pathname.endsWith("/api/pricing");
     auth = String(request.headers.authorization ?? "");
-    search = new URL(request.url ?? "/", "http://local").search;
+    search = isPricing ? search : url.search;
     if (response.hold) return;
+    if (isPricing) {
+      pricingRequests += 1;
+      if (response.stallBody) {
+        reply.writeHead(200, { "content-type": "application/json" });
+        reply.write("{");
+        return;
+      }
+      const pricingStatus = response.pricingStatus ?? response.status ?? 200;
+      reply.writeHead(pricingStatus, { "content-type": "application/json" });
+      reply.end(
+        response.pricing === undefined
+          ? "{}"
+          : typeof response.pricing === "string"
+            ? response.pricing
+            : JSON.stringify(response.pricing),
+      );
+      return;
+    }
     reply.writeHead(response.status ?? 200, {
       "content-type": "application/json",
     });
@@ -88,6 +111,9 @@ async function fixture(response: {
     requested,
     get requests() {
       return requests;
+    },
+    get pricingRequests() {
+      return pricingRequests;
     },
     get auth() {
       return auth;
@@ -290,7 +316,8 @@ describe("OmniRoute provider", () => {
     const offlineResult = await offline.refresh({ allowNetwork: false });
     assert.equal(offlineResult.errors.size, 0);
     assert.equal(offline.getModel("omniroute", "pi-runtime")?.id, "pi-runtime");
-    assert.equal(server.requests, 1);
+    assert.equal(server.requests, 2);
+    assert.equal(server.pricingRequests, 1);
   });
 
   it("preserves routing IDs and maps explicit catalog metadata", async () => {
