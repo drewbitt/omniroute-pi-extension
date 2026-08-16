@@ -110,7 +110,7 @@ function thinkingLevelMap(efforts: readonly Effort[]) {
   const available = new Set(efforts);
   if (available.size === 0) return undefined;
   return {
-    off: available.has("none") ? "none" : null,
+    off: null,
     minimal: available.has("minimal") ? "minimal" : null,
     low: available.has("low") ? "low" : null,
     medium: available.has("medium") ? "medium" : null,
