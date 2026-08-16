@@ -3,6 +3,14 @@ import type { OmniRouteModel } from "./gateway-catalog.ts";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
+// Defensive ceiling. OmniRoute's gateway occasionally advertises an absurd
+// `max_output_tokens` (e.g. 1,048,600 for a model whose upstream rejects
+// anything over 393,216). Pi forwards the model's `maxTokens` verbatim as the
+// upstream `max_tokens` param, so a bogus value causes a non-retryable 400 on
+// every request. Clamp to the largest single output a provider we route to
+// accepts (DeepSeek's 393,216) so genuine large outputs (384K) pass through
+// untouched while absurd multi-million values are cut back.
+const MAX_OUTPUT_TOKENS_CEILING = 393_216;
 const NON_CHAT_TYPES = new Set([
   "embedding",
   "image",
@@ -87,7 +95,7 @@ function toModel(
       cacheWrite: price(model.pricing?.cache_creation),
     },
     contextWindow,
-    maxTokens: Math.min(maxTokens, contextWindow),
+    maxTokens: Math.min(maxTokens, contextWindow, MAX_OUTPUT_TOKENS_CEILING),
   };
 }
 

@@ -413,6 +413,41 @@ describe("OmniRoute provider", () => {
     );
   });
 
+  it("clamps an inflated max_output_tokens so the upstream never 400s", async () => {
+    // Regression: the gateway advertises max_output_tokens=1,048,600 for
+    // cmd/command-code deepseek models. Unclamped, pi sends that as `max_tokens`
+    // and DeepSeek rejects anything over 393,216 with a non-retryable 400.
+    const server = await fixture({
+      payload: {
+        data: [
+          row("cmd/deepseek/deepseek-v4-pro", {
+            context_length: 1_000_000,
+            max_output_tokens: 1_048_600,
+          }),
+          row("deepseek-v4-pro", {
+            context_length: 1_000_000,
+            max_output_tokens: 384_000,
+          }),
+        ],
+      },
+    });
+    const provider = createOmniRouteProvider();
+    await provider.refreshModels!(
+      refreshHarness({ credential: credential(server.baseUrl) }).context,
+    );
+
+    const bogus = provider
+      .getModels()
+      .find((model) => model.id === "cmd/deepseek/deepseek-v4-pro");
+    const modest = provider
+      .getModels()
+      .find((model) => model.id === "deepseek-v4-pro");
+    // 1,048,600 -> clamped to DeepSeek's 393,216 reject threshold
+    assert.equal(bogus?.maxTokens, 393_216);
+    // 384,000 is a genuine output budget: below the ceiling, untouched
+    assert.equal(modest?.maxTokens, 384_000);
+  });
+
   it("accepts a bare-array catalog, conservative defaults, and an empty catalog", async () => {
     const server = await fixture({
       payload: [
