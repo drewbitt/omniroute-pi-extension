@@ -93,10 +93,7 @@ function refreshHarness(options: { credential?: ApiKeyCredential }) {
     stored: undefined,
     allowNetwork: true,
     signal: new AbortController().signal,
-    async publish(publication: {
-      persist?: unknown;
-      update?: () => void;
-    }) {
+    async publish(publication: { persist?: unknown; update?: () => void }) {
       publication.update?.();
       return true;
     },
@@ -167,25 +164,51 @@ describe("pricing merge", () => {
     });
   });
 
-  it("resolves alias mapping for command-code → cc", () => {
+  it("resolves metered reseller aliases (opencode → opencode-go)", () => {
+    const table: PricingTable = {
+      "opencode-go": { "deepseek-v4-flash": { input: 0.14, output: 0.28 } },
+    };
+    const row = { id: "opencode/deepseek-v4-flash", owned_by: "opencode" };
+    assert.deepEqual(resolvePricing(row, table), {
+      input: 0.14,
+      output: 0.28,
+      cached: undefined,
+      cache_creation: undefined,
+    });
+  });
+
+  it("leaves flat-rate providers unpriced (coding plan, web session, Command Code)", () => {
     const table: PricingTable = {
       cc: { "claude-sonnet-4-6": { input: 3, output: 15 } },
+      deepseek: { "deepseek-v4-flash": { input: 0.14, output: 0.28 } },
     };
-    // owned_by command-code
-    assert.deepEqual(
+    // Coding plan (subscription)
+    assert.equal(
+      resolvePricing({ id: "glm/glm-4.7", owned_by: "glm" }, table),
+      undefined,
+    );
+    // Web-session provider (subscription / free tier)
+    assert.equal(
+      resolvePricing(
+        { id: "deepseek-web/deepseek-v4-flash", owned_by: "deepseek-web" },
+        table,
+      ),
+      undefined,
+    );
+    // Command Code: built-in provider and custom connection
+    assert.equal(
       resolvePricing(
         { id: "cmd/claude-sonnet-4-6", owned_by: "command-code" },
         table,
       ),
-      { input: 3, output: 15, cached: undefined, cache_creation: undefined },
+      undefined,
     );
-    // owned_by cc-provider
-    assert.deepEqual(
+    assert.equal(
       resolvePricing(
         { id: "cc-provider/claude-sonnet-4-6", owned_by: "cc-provider" },
         table,
       ),
-      { input: 3, output: 15, cached: undefined, cache_creation: undefined },
+      undefined,
     );
   });
 
@@ -206,7 +229,10 @@ describe("pricing merge", () => {
       a: { "deepseek-v4-flash": { input: 1, output: 2 } },
       b: { "deepseek-v4-flash": { input: 3, output: 4 } },
     };
-    const row = { id: "cmd/deepseek/deepseek-v4-flash", owned_by: "command-code" };
+    const row = {
+      id: "cmd/deepseek/deepseek-v4-flash",
+      owned_by: "command-code",
+    };
     // 'cc' namespace absent, basename ambiguous → stays unpriced
     assert.equal(resolvePricing(row, table), undefined);
   });
@@ -262,13 +288,23 @@ describe("pricing merge", () => {
       },
     });
     const provider = createOmniRouteProvider();
-    await provider.refreshModels!(refreshHarness({ credential: credential(server.baseUrl) }).context);
+    await provider.refreshModels!(
+      refreshHarness({ credential: credential(server.baseUrl) }).context,
+    );
 
     const models = provider.getModels();
+    // Command Code is subscription: `cc` (Claude Code) rates must NOT leak in
     const cc = models.find((m) => m.id === "cmd/claude-sonnet-4-6");
-    assert.deepEqual(cc?.cost, { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 });
+    assert.deepEqual(cc?.cost, {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
     // explicit catalog pricing wins over /api/pricing
-    const or = models.find((m) => m.id === "openrouter/deepseek/deepseek-v4-flash");
+    const or = models.find(
+      (m) => m.id === "openrouter/deepseek/deepseek-v4-flash",
+    );
     assert.deepEqual(or?.cost, {
       input: 0.06426,
       output: 0.12852,
@@ -277,26 +313,40 @@ describe("pricing merge", () => {
     });
     // unpriced stays zero
     const bare = models.find((m) => m.id === "bare/model");
-    assert.deepEqual(bare?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    assert.deepEqual(bare?.cost, {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
   });
 
   it("refresh succeeds when /api/pricing is unavailable", async () => {
     const server = await fixture({
-      payload: { data: [row("cmd/claude-sonnet-4-6", { owned_by: "command-code" })] },
+      payload: {
+        data: [row("cmd/claude-sonnet-4-6", { owned_by: "command-code" })],
+      },
       pricingStatus: 401,
     });
     const provider = createOmniRouteProvider();
-    await provider.refreshModels!(refreshHarness({ credential: credential(server.baseUrl) }).context);
+    await provider.refreshModels!(
+      refreshHarness({ credential: credential(server.baseUrl) }).context,
+    );
     const models = provider.getModels();
     assert.equal(models.length, 1);
-    assert.deepEqual(models[0]?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    assert.deepEqual(models[0]?.cost, {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
   });
 
   it("applyPricingTable leaves rows without matching namespace untouched", () => {
-    const rows = [
-      { id: "a/model", owned_by: "nope", pricing: undefined },
-    ];
-    const out = applyPricingTable(rows, { nope: { "other-model": { input: 1 } } });
+    const rows = [{ id: "a/model", owned_by: "nope", pricing: undefined }];
+    const out = applyPricingTable(rows, {
+      nope: { "other-model": { input: 1 } },
+    });
     assert.equal(out[0], rows[0]); // same reference → no mutation
   });
 });

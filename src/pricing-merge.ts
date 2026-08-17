@@ -4,16 +4,22 @@ import type { OmniRouteModel } from "./gateway-catalog.ts";
  * Enrich unpriced catalog rows with the gateway's `/api/pricing` table.
  *
  * `/v1/models` only carries per-model pricing when the provider id matches a
- * pricing namespace exactly (e.g. `opencode-go`, `kiro`, `gemini`). Several
- * providers are priced under a different namespace — most notably Command
- * Code, whose Claude models live under the `cc` namespace while the catalog
- * rows use `command-code` / `cc-provider` / the `cmd/` id prefix — so those
- * rows arrive with `pricing: null` and would otherwise map to a zero Pi cost.
+ * pricing namespace exactly (e.g. `opencode-go`, `kiro`, `gemini`). Some
+ * providers are priced under a different namespace — e.g. `opencode` rows use
+ * the `opencode-go` rates — so those rows arrive with `pricing: null` and
+ * would otherwise map to a zero Pi cost.
+ *
+ * Flat-rate / subscription providers are never priced per token (the user is
+ * billed a fixed fee, not per token). Upstream (`flatRateProviders.ts`, issues
+ * #5552/#9067) surfaces these as $0, and the resolver below short-circuits
+ * them before any tier so a resold list price — e.g. Claude Code's `cc` rates
+ * leaking onto Command Code — can never be attributed. Such rows stay
+ * unpriced and map to a zero cost.
  *
  * Resolution order, applied only to rows that lack explicit pricing:
  *   1. Exact match on `owned_by` (catalog provider id == pricing namespace).
  *   2. Alias map: catalog provider id or the row id's first path segment maps
- *      to a pricing namespace (e.g. `cmd`/`command-code`/`cc-provider` → `cc`).
+ *      to a pricing namespace (e.g. `opencode` → `opencode-go`).
  *   3. Unambiguous basename: the model basename (`deepseek-v4-flash`) exists in
  *      exactly one pricing namespace — use it. Ambiguous basenames (present in
  *      multiple namespaces) are left unpriced so a resold model is never
@@ -34,18 +40,48 @@ export type PricingTable = Record<string, Record<string, PricingEntry>>;
 
 /** Catalog provider id or public id prefix → pricing namespace. */
 const NAMESPACE_ALIASES: Record<string, string> = {
-  cmd: "cc",
-  "command-code": "cc",
-  "cc-provider": "cc",
   oc: "opencode-go",
   opencode: "opencode-go",
   "opencode-zen": "opencode-go",
   kr: "kiro",
   cx: "codex",
   ds: "deepseek",
-  "deepseek-web": "deepseek",
   ag: "antigravity",
 };
+
+/**
+ * Flat-rate / subscription provider ids. Mirrors OmniRoute's own classification
+ * (`src/lib/usage/flatRateProviders.ts`): coding plans are explicit ids, and
+ * every web-session provider (`-web`) is backed by a consumer subscription or
+ * free tier. Command Code is a subscription service that upstream tracks as a
+ * quota plan (#9921) but has not yet added to its flat-rate set, so it is
+ * included here directly. Upstream deliberately keeps `codex`/`cx`, `byteplus`,
+ * `minimax-cn`, and `glm-thinking` metered — those stay priced.
+ */
+const FLAT_RATE_PROVIDERS: ReadonlySet<string> = new Set([
+  // Coding plans (mirrors upstream FLAT_RATE_SUBSCRIPTION_PROVIDER_IDS)
+  "minimax",
+  "kimi-coding",
+  "kimi-coding-apikey",
+  "xiaomi-mimo",
+  "bailian-coding-plan",
+  "qwen-cloud-token-plan",
+  "glm",
+  "glm-cn",
+  // Command Code (subscription; #9921). `cmd` is its catalog alias and
+  // `cc-provider` the custom-connection prefix used on this gateway.
+  "command-code",
+  "cmd",
+  "cc-provider",
+]);
+
+/** Web-session providers bill a subscription/free tier, not per token. */
+function isFlatRateProvider(id: string | undefined): boolean {
+  if (!id) return false;
+  const normalized = id.trim().toLowerCase();
+  if (!normalized) return false;
+  return FLAT_RATE_PROVIDERS.has(normalized) || normalized.endsWith("-web");
+}
 
 /** True when a pricing entry carries at least one usable rate. */
 function hasUsableRates(entry: PricingEntry | undefined): boolean {
@@ -63,7 +99,9 @@ function normalizeKey(value: string): string {
 }
 
 /** Convert one pricing entry to the catalog row's `pricing` shape. */
-function toRowPricing(entry: PricingEntry): NonNullable<OmniRouteModel["pricing"]> {
+function toRowPricing(
+  entry: PricingEntry,
+): NonNullable<OmniRouteModel["pricing"]> {
   return {
     input: entry.input,
     output: entry.output,
@@ -99,17 +137,28 @@ function idPrefix(id: string): string {
 }
 
 export function parsePricingTable(payload: unknown): PricingTable {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
     return {};
   }
   const table: PricingTable = {};
   for (const [namespace, models] of Object.entries(payload)) {
-    if (typeof models !== "object" || models === null || Array.isArray(models)) continue;
+    if (typeof models !== "object" || models === null || Array.isArray(models))
+      continue;
     const parsed: Record<string, PricingEntry> = {};
     for (const [model, raw] of Object.entries(models)) {
-      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+        continue;
       const entry: PricingEntry = {};
-      for (const field of ["input", "output", "cached", "cache_creation"] as const) {
+      for (const field of [
+        "input",
+        "output",
+        "cached",
+        "cache_creation",
+      ] as const) {
         const value = (raw as Record<string, unknown>)[field];
         if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
           entry[field] = value;
@@ -131,20 +180,31 @@ export function resolvePricing(
 
   const ownedBy = row.owned_by?.trim().toLowerCase() ?? "";
   const prefix = idPrefix(row.id).toLowerCase();
+
+  // Flat-rate providers are never per-token: short-circuit every resolution
+  // tier (exact, alias, and basename fallback) so a resold list price can't
+  // leak onto them.
+  if (isFlatRateProvider(ownedBy) || isFlatRateProvider(prefix)) {
+    return row.pricing;
+  }
+
   const candidates: string[] = [];
   if (ownedBy) candidates.push(ownedBy);
   if (prefix) candidates.push(prefix);
   for (const candidate of candidates) {
     const exact = table[candidate];
     if (exact) {
-      const entry = findModel(exact, basename(row.id)) ?? findModel(exact, row.id);
+      const entry =
+        findModel(exact, basename(row.id)) ?? findModel(exact, row.id);
       if (entry) return toRowPricing(entry);
     }
     const aliased = NAMESPACE_ALIASES[candidate];
     if (aliased) {
       const namespace = table[aliased];
       if (namespace) {
-        const entry = findModel(namespace, basename(row.id)) ?? findModel(namespace, row.id);
+        const entry =
+          findModel(namespace, basename(row.id)) ??
+          findModel(namespace, row.id);
         if (entry) return toRowPricing(entry);
       }
     }
