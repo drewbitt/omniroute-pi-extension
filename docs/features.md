@@ -23,7 +23,7 @@ No management, OpenCode, or VS Code endpoint is required. Listing is not treated
 - Vision is enabled only by image input or explicit vision/attachment capability.
 - Positive reported limits are used. Missing limits use Pi's compatibility defaults of 128,000 context and 16,384 output, with output capped to context.
 - Explicit `/v1/models` pricing is mapped from OmniRoute's per-million-token fields, enriched from the management `GET /api/pricing` table when present. Enrichment resolves by exact provider id, then a small catalog-prefix → namespace alias table for metered resellers (e.g. `opencode` rows use `opencode-go` rates), then an unambiguous basename. Flat-rate / subscription / web-session providers (coding plans, `*-web`, and Command Code) are deliberately left unpriced so a reseller's per-token list price is never attributed to a subscription — they map to zero, matching OmniRoute's own flat-rate treatment. Rows that stay unpriced for any other reason (missing rates, ambiguous basenames, or no management access) also map to zero — unknown rather than free. The management call is best-effort: discovery never depends on it.
-- An explicit catalog name is used when present; otherwise the exact routing ID is the display name.
+- Every model's display name carries its underlying provider (the catalog `owned_by`), with redundant `prefix/` and `Vendor:` segments stripped; models without a catalog name fall back to the routing ID.
 
 ## Persistence and endpoint isolation
 

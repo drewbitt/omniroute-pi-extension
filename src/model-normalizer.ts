@@ -56,6 +56,41 @@ export function normalizeModels(
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
+function buildDisplayName(model: OmniRouteModel): string {
+  const id = model.id;
+  const idPrefix = id.split("/")[0] ?? "";
+  const idRest = id.startsWith(`${idPrefix}/`)
+    ? id.slice(idPrefix.length + 1)
+    : id;
+  const vendor = model.owned_by?.trim() || idPrefix;
+
+  let base = model.name?.trim() ?? "";
+  if (!base || base === id || base === idRest) base = "";
+
+  if (base) {
+    // Drop a redundant "<prefix>/" that repeats the catalog prefix or the
+    // owned_by vendor, e.g. "crof/DeepSeek V4 Pro" -> "DeepSeek V4 Pro".
+    for (const prefix of [idPrefix, vendor]) {
+      if (prefix && base.startsWith(`${prefix}/`)) {
+        base = base.slice(prefix.length + 1);
+        break;
+      }
+    }
+    // Drop a "Vendor: " prefix, e.g. "DeepSeek: DeepSeek V4 Pro 0813".
+    base = base.replace(/^[A-Za-z0-9_.@-]+:\s*/, "");
+    // Drop leading lowercase namespace path segments, e.g.
+    // "anthropic/claude-4-sonnet" -> "claude-4-sonnet".
+    for (let i = 0; i < 2; i++) {
+      const match = base.match(/^([a-z0-9_.@-]+)\/(.+)$/);
+      if (!match) break;
+      base = match[2];
+    }
+  }
+
+  if (!base.trim()) base = idRest;
+  return vendor ? `${vendor} · ${base}` : base;
+}
+
 function toModel(
   providerId: string,
   baseUrl: string,
@@ -79,11 +114,11 @@ function toModel(
     model.input_modalities?.includes("image") ||
     model.capabilities?.vision === true ||
     model.capabilities?.attachment === true;
-  const displayName = model.name?.trim();
+  const displayName = buildDisplayName(model);
 
   return {
     id: model.id,
-    name: displayName || model.id,
+    name: displayName,
     api: "openai-completions",
     provider: providerId,
     baseUrl,

@@ -363,7 +363,19 @@ describe("OmniRoute provider", () => {
       .getModels()
       .find((model) => model.id === "vision/model");
     assert.deepEqual(vision?.input, ["text", "image"]);
-    assert.equal(vision?.name, "Vision Model");
+    assert.equal(vision?.name, "vision · Vision Model");
+    assert.equal(
+      provider.getModels().find((model) => model.id === "gpt-5.6-sol")?.name,
+      "combo · gpt-5.6-sol",
+    );
+    assert.equal(
+      provider.getModels().find((model) => model.id === "auto/coding")?.name,
+      "combo · coding",
+    );
+    assert.equal(
+      provider.getModels().find((model) => model.id === "cx/gpt-5.6-sol")?.name,
+      "cx · gpt-5.6-sol",
+    );
     assert.deepEqual(vision?.cost, {
       input: 1.25,
       output: 5,
@@ -374,6 +386,53 @@ describe("OmniRoute provider", () => {
     assert.equal(server.search, "?prefix=alias&configuredOnly=true");
     assert.ok(harness.stored);
     assert.deepEqual(harness.persistenceActions, ["omitted", "snapshot"]);
+  });
+
+  it("labels every model with its underlying provider", async () => {
+    const server = await fixture({
+      payload: {
+        data: [
+          row("crof/deepseek-v4-pro", {
+            owned_by: "crof",
+            name: "crof/DeepSeek V4 Pro",
+          }),
+          row("crof/deepseek-v4-pro-0813", {
+            owned_by: "crof",
+            name: "DeepSeek: DeepSeek V4 Pro 0813",
+          }),
+          row("cmd/claude-opus-4-6", {
+            owned_by: "command-code",
+            name: "Claude Opus 4.6 (CC)",
+          }),
+          row("vag/anthropic/claude-4-sonnet", {
+            owned_by: "vercel-ai-gateway",
+            name: "anthropic/claude-4-sonnet",
+          }),
+          row("auto/best-coding", { owned_by: "combo" }),
+        ],
+      },
+    });
+    const provider = createOmniRouteProvider();
+    const harness = refreshHarness({ credential: credential(server.baseUrl) });
+    await provider.refreshModels!(harness.context);
+
+    const nameOf = (id: string) =>
+      provider.getModels().find((model) => model.id === id)?.name;
+
+    assert.equal(nameOf("crof/deepseek-v4-pro"), "crof · DeepSeek V4 Pro");
+    assert.equal(
+      nameOf("crof/deepseek-v4-pro-0813"),
+      "crof · DeepSeek V4 Pro 0813",
+    );
+    assert.equal(
+      nameOf("cmd/claude-opus-4-6"),
+      "command-code · Claude Opus 4.6 (CC)",
+    );
+    assert.equal(
+      nameOf("vag/anthropic/claude-4-sonnet"),
+      "vercel-ai-gateway · anthropic/claude-4-sonnet",
+    );
+    assert.equal(nameOf("auto/best-coding"), "combo · best-coding");
   });
 
   it("filters non-chat rows and handles edge metadata", async () => {
