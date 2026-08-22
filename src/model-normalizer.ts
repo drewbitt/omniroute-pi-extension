@@ -35,6 +35,25 @@ const EFFORTS = new Set([
 type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
+ * Fallback effort map for reasoning models that advertise NO effort tiers:
+ * without a map, pi treats every level as supported and forwards the raw
+ * level string. Live-measured against v3.8.50: low/medium/high/xhigh are the
+ * canonical vocabulary and accepted everywhere (mappers down-shift xhigh for
+ * models that lack it), while `max` 400s on every route without a native max
+ * tier and `minimal` is not part of the canonical set — both are marked
+ * unsupported so pi clamps to the nearest supported level instead.
+ */
+const DEFAULT_EFFORT_MAP = {
+  off: null,
+  minimal: null,
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: null,
+} as const;
+
+/**
  * Effort-suffixed catalog rows (`<model>-low`, `-xhigh`, …) are gateway-
  * synthesized aliases: at request time the suffix is stripped back to the
  * base model and re-emerges as reasoning_effort, which pi already expresses
@@ -126,7 +145,9 @@ function toModel(
     model.capabilities?.reasoning === true ||
     model.capabilities?.thinking === true ||
     efforts.some((effort) => effort !== "none");
-  const map = reasoning ? thinkingLevelMap(efforts) : undefined;
+  const map = reasoning
+    ? (thinkingLevelMap(efforts) ?? DEFAULT_EFFORT_MAP)
+    : undefined;
   const contextWindow =
     positive(model.context_length) ??
     positive(model.max_input_tokens) ??
@@ -205,7 +226,8 @@ function isConversational(model: OmniRouteModel): boolean {
   const type = model.type?.trim().toLowerCase();
   if (type && NON_CHAT_TYPES.has(type)) return false;
   return (
-    !model.output_modalities?.length || modalitiesInclude(model.output_modalities, "text")
+    !model.output_modalities?.length ||
+    modalitiesInclude(model.output_modalities, "text")
   );
 }
 
@@ -214,9 +236,7 @@ function modalitiesInclude(
   values: readonly string[] | undefined,
   target: string,
 ): boolean {
-  return (values ?? []).some(
-    (value) => value?.trim().toLowerCase() === target,
-  );
+  return (values ?? []).some((value) => value?.trim().toLowerCase() === target);
 }
 
 function price(value: number | undefined): number {

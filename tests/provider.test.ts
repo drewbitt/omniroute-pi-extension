@@ -526,6 +526,31 @@ describe("OmniRoute provider", () => {
     ]);
   });
 
+  it("gives tier-less reasoning models a conservative default effort map", async () => {
+    // Without a map, pi forwards the raw selected level; live checks show raw
+    // `max` 400s on routes without a native max tier and `minimal` is not
+    // canonical, while low/medium/high/xhigh are accepted everywhere.
+    const server = await fixture({
+      payload: {
+        data: [row("bare/reasoner", { capabilities: { reasoning: true } })],
+      },
+    });
+    const provider = createOmniRouteProvider();
+    await provider.refreshModels!(
+      refreshHarness({ credential: credential(server.baseUrl) }).context,
+    );
+    const map = provider.getModels()[0]?.thinkingLevelMap;
+    assert.deepEqual(map, {
+      off: null,
+      minimal: null,
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: null,
+    });
+  });
+
   it("clamps an inflated max_output_tokens so the upstream never 400s", async () => {
     // Regression: the gateway advertises max_output_tokens=1,048,600 for
     // cmd/command-code deepseek models. Unclamped, pi sends that as `max_tokens`
