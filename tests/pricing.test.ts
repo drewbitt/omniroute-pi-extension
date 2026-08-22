@@ -210,6 +210,18 @@ describe("pricing merge", () => {
       ),
       undefined,
     );
+    // Claude Code plan (upstream #10773): OAuth id and its `cc` alias
+    assert.equal(
+      resolvePricing(
+        { id: "claude/claude-sonnet-4-6", owned_by: "claude" },
+        table,
+      ),
+      undefined,
+    );
+    assert.equal(
+      resolvePricing({ id: "cc/claude-sonnet-4-6", owned_by: "cc" }, table),
+      undefined,
+    );
   });
 
   it("keeps explicit pricing untouched", () => {

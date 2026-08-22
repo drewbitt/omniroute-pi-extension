@@ -14,7 +14,7 @@ _Avoid_: direct `models.json` mutation, plaintext extension config, automatic le
 **Exact Routing ID**: Every Pi model ID is the exact OmniRoute catalog ID.
 _Avoid_: `combo/` prefixing, OpenCode provider prefixes, suffix folding, synthesized IDs.
 
-**Catalog Pricing**: `/v1/models` per-million-token prices map to Pi cost fields, enriched from the management `GET /api/pricing` table (exact provider id, then prefix→namespace aliases for metered resellers like `opencode`→`opencode-go`, then unambiguous basename). Flat-rate / subscription / web-session providers (Command Code, `*-web`, coding plans) are left at zero to match OmniRoute's flat-rate treatment. The management call is best-effort and never blocks discovery. Missing or ambiguous prices remain zero because Pi requires numbers.
+**Catalog Pricing**: `/v1/models` per-million-token prices map to Pi cost fields, enriched from the management `GET /api/pricing` table (exact provider id, then prefix→namespace aliases for metered resellers like `opencode`→`opencode-go`, then unambiguous basename). Flat-rate / subscription / web-session providers (Command Code, Claude Code `claude`/`cc`, `*-web`, coding plans) are left at zero to match OmniRoute's flat-rate treatment. The management call is best-effort and never blocks discovery. Missing or ambiguous prices remain zero because Pi requires numbers.
 _Avoid_: treating missing zeroes as proof that a model or combo is free, or depending on the management endpoint for catalog discovery.
 
 ## Structure
@@ -22,3 +22,8 @@ _Avoid_: treating missing zeroes as proof that a model or combo is free, or depe
 - `index.ts` constructs the provider and registers `/omni` status/sync commands.
 - `src/gateway-catalog.ts` owns URL normalization, native auth, and authenticated catalog retrieval.
 - `src/model-normalizer.ts` conservatively converts gateway rows to Pi Chat Completions models.
+
+## Gateway behavior notes (verified against v3.8.50, 2026-08-22)
+
+- Thinking "off" always OMITS `reasoning_effort` (`thinkingLevelMap.off = null`). Although #6241 made `none` canonical and #10957 injects a vendor-default effort when no reasoning field is present, live measurement shows some providers reject explicit `none` despite advertising it as an effort tier, and some provider schemas reject it outright. Since pi sends map.off on every no-effort request (title generation, quick tasks), any non-null value re-creates those 400s; the injection risk from omission is acceptable (a vendor default is that model's recommended effort).
+- `/v1/models?prefix=alias&configuredOnly=true` semantics are unchanged; new row fields (`release_date`, `family`, `api_format`, `pricing.reasoning`, …) are additive and safely ignored.

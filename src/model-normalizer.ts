@@ -155,6 +155,17 @@ function thinkingLevelMap(efforts: readonly Effort[]) {
   const available = new Set(efforts);
   if (available.size === 0) return undefined;
   return {
+    // "off" must OMIT reasoning_effort entirely (null), never send "none".
+    // Measured against a live v3.8.50 gateway: some providers advertise
+    // `none` in capabilities.effort_tiers yet reject it upstream
+    // (`reasoning.effort does not support none`), and some provider schemas
+    // reject it outright (`expected one of low|medium|high|xhigh|max`). Since
+    // pi sends map.off on every no-effort request (title generation, quick
+    // tasks), any non-null value re-creates those 400s. Omission is what the
+    // gateways before #6241/#10957 expected and still works everywhere; the
+    // cost is that #10957's vendor-default-effort injection can fire on such
+    // requests — acceptable, because an injected default is the vendor's own
+    // recommended effort for the model.
     off: null,
     minimal: available.has("minimal") ? "minimal" : null,
     low: available.has("low") ? "low" : null,

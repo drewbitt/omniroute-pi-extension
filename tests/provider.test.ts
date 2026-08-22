@@ -329,6 +329,12 @@ describe("OmniRoute provider", () => {
           row("cx/gpt-5.6-sol", {
             capabilities: { reasoning: true, effort_tiers: ["low", "high"] },
           }),
+          row("ds/deepseek-v4-flash", {
+            capabilities: {
+              reasoning: true,
+              effort_tiers: ["none", "low", "high", "max"],
+            },
+          }),
           row("vision/model", {
             name: "Vision Model",
             root: "canonical/model",
@@ -351,6 +357,7 @@ describe("OmniRoute provider", () => {
     assert.deepEqual(ids(provider), [
       "auto/coding",
       "cx/gpt-5.6-sol",
+      "ds/deepseek-v4-flash",
       "gpt-5.6-sol",
       "vision/model",
     ]);
@@ -359,6 +366,21 @@ describe("OmniRoute provider", () => {
         ?.thinkingLevelMap?.high,
       "high",
     );
+    // "off" must omit reasoning_effort entirely for EVERY model, even ones
+    // advertising a `none` tier: live v3.8.50 measurement shows some
+    // providers reject explicit "none" despite advertising it as a tier
+    // (and some provider schemas reject it outright), and pi sends map.off
+    // on every no-effort request.
+    assert.equal(
+      provider.getModels().find((model) => model.id === "cx/gpt-5.6-sol")
+        ?.thinkingLevelMap?.off,
+      null,
+    );
+    const deepseek = provider
+      .getModels()
+      .find((model) => model.id === "ds/deepseek-v4-flash");
+    assert.equal(deepseek?.thinkingLevelMap?.off, null);
+    assert.equal(deepseek?.thinkingLevelMap?.max, "max");
     const vision = provider
       .getModels()
       .find((model) => model.id === "vision/model");

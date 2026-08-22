@@ -68,6 +68,9 @@ const FLAT_RATE_PROVIDERS: ReadonlySet<string> = new Set([
   "qwen-cloud-token-plan",
   "glm",
   "glm-cn",
+  // Claude Code plan (upstream #10773): OAuth Claude Pro/Max subscription.
+  "claude",
+  "cc",
   // Command Code (subscription; #9921). `cmd` is its catalog alias and
   // `cc-provider` the custom-connection prefix used on this gateway.
   "command-code",
