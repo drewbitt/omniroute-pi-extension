@@ -142,25 +142,18 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
   };
 }
 
-// Footer chip: model count plus the time of the last successful sync this
-// session. Left unset when nothing is loaded so users who register the
-// provider but do not use it see no noise.
-let lastSyncedAt: number | undefined;
-// Only the registry and footer are needed; every pi event/command context
-// satisfies this shape.
+// Footer chip, shown only while the active model comes from OmniRoute.
+// Anything else keeps the footer clear.
 type StatusContext = Pick<ExtensionCommandContext, "modelRegistry" | "ui">;
 
-function setStatus(ctx: StatusContext): void {
+function setStatus(ctx: StatusContext, providerId: string | undefined): void {
   const count =
     ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels().length ?? 0;
-  if (!count) return;
-  const synced = lastSyncedAt
-    ? ` · synced ${new Date(lastSyncedAt).toLocaleTimeString()}`
-    : "";
-  ctx.ui.setStatus(
-    PROVIDER_ID,
-    `${PROVIDER_NAME}: ${count.toLocaleString()} models${synced}`,
-  );
+  if (providerId !== PROVIDER_ID || !count) {
+    ctx.ui.setStatus(PROVIDER_ID, undefined);
+    return;
+  }
+  ctx.ui.setStatus(PROVIDER_ID, `${PROVIDER_NAME}: ${count.toLocaleString()}`);
 }
 
 async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
@@ -235,8 +228,7 @@ async function syncModels(ctx: ExtensionCommandContext): Promise<void> {
     }${delta}.`,
     "info",
   );
-  lastSyncedAt = Date.now();
-  setStatus(ctx);
+  setStatus(ctx, ctx.model?.provider);
 }
 
 export default function omniRouteExtension(pi: ExtensionAPI): void {
@@ -254,7 +246,10 @@ export default function omniRouteExtension(pi: ExtensionAPI): void {
       }
       return;
     }
-    setStatus(ctx);
+    setStatus(ctx, ctx.model?.provider);
+  });
+  pi.on("model_select", (event, ctx) => {
+    setStatus(ctx, event.model.provider);
   });
   pi.registerCommand("omni", {
     description: "Show OmniRoute status or refresh its model catalog",

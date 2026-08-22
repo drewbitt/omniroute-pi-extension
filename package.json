@@ -1,6 +1,6 @@
 {
   "name": "omniroute-pi-extension",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Pi extension for OmniRoute: every model always in sync, with per-turn token costs and reasoning effort matched to each model.",
   "license": "MIT",
   "keywords": [

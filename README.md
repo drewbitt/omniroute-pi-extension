@@ -50,7 +50,7 @@ export OMNIROUTE_API_KEY=your-key  # optional on servers without API-key auth
 | `/omni help` | Show command help |
 | `/login omniroute` | Change the endpoint or API key |
 
-After a sync the footer shows the loaded model count and sync time. On first use, before you configure anything, Pi shows a hint pointing at `/login omniroute`.
+While an OmniRoute model is your active model, the footer shows the gateway's model count. On first use, before you configure anything, Pi shows a hint pointing at `/login omniroute`.
 
 ## How models are handled
 
