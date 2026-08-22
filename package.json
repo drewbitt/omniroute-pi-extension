@@ -2,7 +2,6 @@
   "name": "omniroute-pi-extension",
   "version": "0.3.2",
   "description": "Native OmniRoute provider extension for Pi with live model discovery.",
-  "private": true,
   "license": "MIT",
   "keywords": [
     "pi-package",
@@ -34,8 +33,6 @@
     "@biomejs/biome": "^2.5.10",
     "@earendil-works/pi-ai": "^0.84.2",
     "@earendil-works/pi-coding-agent": "^0.84.2",
-    "@ttsc/lint": "^0.28.1",
-    "ttsc": "^0.28.1",
     "typescript": "^7.0.2"
   },
   "repository": {
