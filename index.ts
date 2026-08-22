@@ -122,13 +122,19 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
         parsePricingTable(pricingPayload),
       );
       const refreshed = normalizeModels(PROVIDER_ID, baseUrl, enriched);
-      await context.publish({
-        persist: { models: refreshed, checkedAt: Date.now() },
-        update: () => {
-          models = refreshed;
-          activeScope = requestedScope;
-        },
-      });
+      // A rejected publication (superseded generation) ends the refresh:
+      // unlike the restore-path publishes above there is no fallback state
+      // to apply, but success must not be reported for a rejected publish.
+      if (
+        !(await context.publish({
+          persist: { models: refreshed, checkedAt: Date.now() },
+          update: () => {
+            models = refreshed;
+            activeScope = requestedScope;
+          },
+        }))
+      )
+        return;
     },
     stream: (model, context, options) =>
       streams.stream(model, context, options),

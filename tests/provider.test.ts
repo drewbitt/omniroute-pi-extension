@@ -494,6 +494,38 @@ describe("OmniRoute provider", () => {
     );
   });
 
+  it("drops effort-suffixed variants only when the base advertises the tier", async () => {
+    const server = await fixture({
+      payload: {
+        data: [
+          // Base advertises low -> `-low` variant is redundant and dropped.
+          row("vendor/model", {
+            capabilities: { reasoning: true, effort_tiers: ["low", "high"] },
+          }),
+          row("vendor/model-low"),
+          // Base does not advertise xhigh -> variant kept (only way to reach it).
+          row("vendor/model-xhigh"),
+          // Orphan: no `vendor/other` base row -> kept.
+          row("vendor/other-high"),
+          // A real model that merely ends in a tier-like token, no base row:
+          // kept.
+          row("solo/high-only"),
+        ],
+      },
+    });
+    const provider = createOmniRouteProvider();
+    await provider.refreshModels!(
+      refreshHarness({ credential: credential(server.baseUrl) }).context,
+    );
+
+    assert.deepEqual(ids(provider), [
+      "solo/high-only",
+      "vendor/model",
+      "vendor/model-xhigh",
+      "vendor/other-high",
+    ]);
+  });
+
   it("clamps an inflated max_output_tokens so the upstream never 400s", async () => {
     // Regression: the gateway advertises max_output_tokens=1,048,600 for
     // cmd/command-code deepseek models. Unclamped, pi sends that as `max_tokens`
@@ -643,6 +675,7 @@ describe("OmniRoute provider", () => {
     );
     assert.deepEqual(ids(failing), ["last-known-good"]);
 
+    // A payload with no model array at all is still rejected outright.
     const malformed = await fixture({ payload: { models: [] } });
     await assert.rejects(
       createOmniRouteProvider().refreshModels!(
@@ -650,6 +683,16 @@ describe("OmniRoute provider", () => {
       ),
       /invalid catalog/,
     );
+
+    // Isolated malformed rows are dropped, not fatal: the valid rows survive.
+    const mixed = await fixture({
+      payload: { data: [row("kept"), { broken: true }, "junk"] },
+    });
+    const tolerant = createOmniRouteProvider();
+    await tolerant.refreshModels!(
+      refreshHarness({ credential: credential(mixed.baseUrl) }).context,
+    );
+    assert.deepEqual(ids(tolerant), ["kept"]);
 
     const invalidJson = await fixture({ payload: "{" });
     await assert.rejects(
@@ -659,27 +702,17 @@ describe("OmniRoute provider", () => {
       /invalid JSON/,
     );
 
+    // Duplicate ids no longer brick the refresh: first occurrence wins.
     const duplicate = await fixture({
       payload: { data: [row("duplicate"), row("duplicate")] },
     });
-    const storedForDuplicate: ModelsStoreEntry = {
-      models: first.stored!.models.map((model) => ({
-        ...model,
-        baseUrl: duplicate.baseUrl,
-      })),
-      checkedAt: first.stored!.checkedAt,
-    };
     const duplicateProvider = createOmniRouteProvider();
-    await assert.rejects(
-      duplicateProvider.refreshModels!(
-        refreshHarness({
-          credential: credential(duplicate.baseUrl, PUBLIC_API_KEY),
-          stored: storedForDuplicate,
-        }).context,
-      ),
-      /duplicate model ID/,
+    await duplicateProvider.refreshModels!(
+      refreshHarness({
+        credential: credential(duplicate.baseUrl, PUBLIC_API_KEY),
+      }).context,
     );
-    assert.deepEqual(ids(duplicateProvider), ["last-known-good"]);
+    assert.deepEqual(ids(duplicateProvider), ["duplicate"]);
   });
 
   it("retains an endpoint-scoped catalog on refresh failure until its scope changes", async () => {

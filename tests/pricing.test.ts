@@ -222,6 +222,19 @@ describe("pricing merge", () => {
       resolvePricing({ id: "cc/claude-sonnet-4-6", owned_by: "cc" }, table),
       undefined,
     );
+    // Explicit catalog pricing on a flat-rate row is stripped: the flat-rate
+    // classification wins over metered rates the catalog may attach.
+    assert.equal(
+      resolvePricing(
+        {
+          id: "cmd/claude-sonnet-4-6",
+          owned_by: "command-code",
+          pricing: { input: 3, output: 15 },
+        },
+        table,
+      ),
+      undefined,
+    );
   });
 
   it("keeps explicit pricing untouched", () => {

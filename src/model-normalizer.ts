@@ -34,6 +34,33 @@ const EFFORTS = new Set([
 
 type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+/**
+ * Effort-suffixed catalog rows (`<model>-low`, `-xhigh`, …) are gateway-
+ * synthesized aliases: at request time the suffix is stripped back to the
+ * base model and re-emerges as reasoning_effort, which pi already expresses
+ * through thinking levels. When the base row exists AND advertises that tier
+ * the variant is pure duplication — measured 980 of 3922 live rows — and is
+ * dropped. Orphan variants (base absent) and tiers the base does not
+ * advertise are kept: they may be the only way to reach that effort.
+ */
+const EFFORT_SUFFIX = /^(.*?)-(none|minimal|low|medium|high|xhigh|max)$/;
+
+function dropRedundantEffortVariants(
+  rows: readonly OmniRouteModel[],
+): readonly OmniRouteModel[] {
+  const byId = new Map<string, OmniRouteModel>();
+  for (const row of rows) if (!byId.has(row.id)) byId.set(row.id, row);
+  return rows.filter((row) => {
+    const match = EFFORT_SUFFIX.exec(row.id);
+    if (!match) return true;
+    const base = byId.get(match[1]);
+    if (!base) return true;
+    return !parseEfforts(base.capabilities?.effort_tiers).includes(
+      match[2] as Effort,
+    );
+  });
+}
+
 export function normalizeModels(
   providerId: string,
   baseUrl: string,
@@ -41,13 +68,11 @@ export function normalizeModels(
 ): readonly Model<"openai-completions">[] {
   const models: OmniRouteModel[] = [];
   const seen = new Set<string>();
-  for (const row of rows) {
+  for (const row of dropRedundantEffortVariants(rows)) {
     if (!isConversational(row)) continue;
-    if (seen.has(row.id)) {
-      throw new Error(
-        `OmniRoute catalog contains duplicate model ID: ${row.id}`,
-      );
-    }
+    // First-wins on duplicate ids: one misconfigured gateway alias must not
+    // brick discovery for the entire catalog.
+    if (seen.has(row.id)) continue;
     seen.add(row.id);
     models.push(row);
   }
@@ -111,7 +136,7 @@ function toModel(
     positive(model.max_tokens) ??
     DEFAULT_MAX_TOKENS;
   const vision =
-    model.input_modalities?.includes("image") ||
+    modalitiesInclude(model.input_modalities, "image") ||
     model.capabilities?.vision === true ||
     model.capabilities?.attachment === true;
   const displayName = buildDisplayName(model);
@@ -180,7 +205,17 @@ function isConversational(model: OmniRouteModel): boolean {
   const type = model.type?.trim().toLowerCase();
   if (type && NON_CHAT_TYPES.has(type)) return false;
   return (
-    !model.output_modalities?.length || model.output_modalities.includes("text")
+    !model.output_modalities?.length || modalitiesInclude(model.output_modalities, "text")
+  );
+}
+
+/** Case-insensitive modality check: gateways have shipped "IMAGE"/"Text". */
+function modalitiesInclude(
+  values: readonly string[] | undefined,
+  target: string,
+): boolean {
+  return (values ?? []).some(
+    (value) => value?.trim().toLowerCase() === target,
   );
 }
 

@@ -175,21 +175,49 @@ export function parsePricingTable(payload: unknown): PricingTable {
 }
 
 /** Resolve pricing for one catalog row against the merged table. */
+/**
+ * Precomputed basename → entry index for the unambiguous-basename fallback.
+ * `count` is the number of pricing namespaces containing that basename; only
+ * `count === 1` entries are usable (a resold model must never inherit a rate
+ * from a different reseller).
+ */
+export type PricingBasenameIndex = Map<
+  string,
+  { count: number; entry: PricingEntry }
+>;
+
+export function buildPricingBasenameIndex(
+  table: PricingTable,
+): PricingBasenameIndex {
+  const index: PricingBasenameIndex = new Map();
+  for (const namespace of Object.values(table)) {
+    for (const [key, entry] of Object.entries(namespace)) {
+      const hit = index.get(key);
+      if (hit) hit.count += 1;
+      else index.set(key, { count: 1, entry });
+    }
+  }
+  return index;
+}
+
 export function resolvePricing(
   row: OmniRouteModel,
   table: PricingTable,
+  basenameIndex?: PricingBasenameIndex,
 ): OmniRouteModel["pricing"] {
-  if (row.pricing && hasUsableRates(row.pricing)) return row.pricing;
-
   const ownedBy = row.owned_by?.trim().toLowerCase() ?? "";
   const prefix = idPrefix(row.id).toLowerCase();
 
   // Flat-rate providers are never per-token: short-circuit every resolution
   // tier (exact, alias, and basename fallback) so a resold list price can't
-  // leak onto them.
+  // leak onto them. This also strips explicit catalog pricing on such rows:
+  // if /v1/models attaches metered rates to a subscription row, the flat-rate
+  // classification wins.
   if (isFlatRateProvider(ownedBy) || isFlatRateProvider(prefix)) {
-    return row.pricing;
+    return hasUsableRates(row.pricing) ? undefined : row.pricing;
   }
+
+  if (row.pricing && hasUsableRates(row.pricing)) return row.pricing;
 
   const candidates: string[] = [];
   if (ownedBy) candidates.push(ownedBy);
@@ -214,18 +242,26 @@ export function resolvePricing(
   }
 
   // Unambiguous basename fallback — only when exactly one namespace prices it.
+  // With a prebuilt index this is O(1) per row instead of a scan of every
+  // namespace (measured 2.5s per refresh at 278 namespaces x ~11k entries);
+  // without one, fall back to the scan so direct callers stay correct.
   const base = basename(row.id);
   if (base) {
-    let found: PricingEntry | undefined;
-    let matches = 0;
-    for (const namespace of Object.values(table)) {
-      const entry = findModel(namespace, base);
-      if (entry) {
-        matches += 1;
-        found = entry;
+    if (basenameIndex) {
+      const hit = basenameIndex.get(normalizeKey(base));
+      if (hit && hit.count === 1) return toRowPricing(hit.entry);
+    } else {
+      let found: PricingEntry | undefined;
+      let matches = 0;
+      for (const namespace of Object.values(table)) {
+        const entry = findModel(namespace, base);
+        if (entry) {
+          matches += 1;
+          found = entry;
+        }
       }
+      if (matches === 1 && found) return toRowPricing(found);
     }
-    if (matches === 1 && found) return toRowPricing(found);
   }
 
   return row.pricing;
@@ -237,8 +273,9 @@ export function applyPricingTable(
   table: PricingTable,
 ): OmniRouteModel[] {
   if (Object.keys(table).length === 0) return [...rows];
+  const basenameIndex = buildPricingBasenameIndex(table);
   return rows.map((row) => {
-    const resolved = resolvePricing(row, table);
+    const resolved = resolvePricing(row, table, basenameIndex);
     return resolved === row.pricing ? row : { ...row, pricing: resolved };
   });
 }

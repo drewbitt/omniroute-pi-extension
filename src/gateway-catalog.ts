@@ -149,41 +149,41 @@ export async function fetchModelCatalog(
         Accept: "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      signal,
+      // Hard cap so an ambient signal (startup refresh) cannot hang forever
+      // on a stalled server; /omni sync already bounds the whole refresh.
+      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     });
   } catch (error) {
-    if (
-      signal.aborted ||
-      (error instanceof Error && error.name === "AbortError")
-    )
-      throw abortError();
-    throw new Error("OmniRoute model discovery failed");
+    if (isAbort(error)) throw abortError();
+    throw new Error("OmniRoute model discovery failed", { cause: error });
   }
   if (!response.ok)
     throw new Error(
-      `OmniRoute model discovery failed with HTTP ${response.status}`,
+      `OmniRoute model discovery failed with HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
     );
 
   let payload: unknown;
   try {
     payload = await response.json();
   } catch (error) {
-    if (
-      signal.aborted ||
-      (error instanceof Error && error.name === "AbortError")
-    )
-      throw abortError();
-    throw new Error("OmniRoute model discovery returned invalid JSON");
+    if (isAbort(error)) throw abortError();
+    throw new Error("OmniRoute model discovery returned invalid JSON", {
+      cause: error,
+    });
   }
-  const rows = Array.isArray(payload)
-    ? payload
-    : isRecord(payload) && Array.isArray(payload.data)
-      ? payload.data
-      : undefined;
-  if (!rows || !rows.every(isModelRow)) {
+  let rows: unknown[] | undefined;
+  if (Array.isArray(payload)) {
+    rows = payload;
+  } else if (isRecord(payload) && Array.isArray(payload.data)) {
+    rows = payload.data;
+  }
+  if (!rows) {
     throw new Error("OmniRoute model discovery returned an invalid catalog");
   }
-  return rows;
+  // Tolerate isolated malformed rows: drop them instead of rejecting a
+  // catalog of thousands otherwise-fine models. An empty catalog is
+  // legitimate (a gateway may have zero configured models).
+  return rows.filter(isModelRow);
 }
 
 /** Management endpoint root: strip the trailing `/v1` (e.g. `.../v1` → `...`). */
@@ -225,14 +225,10 @@ export async function fetchPricingTable(
         Accept: "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      signal,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
     });
   } catch (error) {
-    if (
-      signal.aborted ||
-      (error instanceof Error && error.name === "AbortError")
-    )
-      throw abortError();
+    if (isAbort(error)) throw abortError();
     return null;
   }
   if (!response.ok) return null;
@@ -292,6 +288,14 @@ function isModelRow(value: unknown): value is OmniRouteModel {
     optionalNumber(value.max_input_tokens) &&
     optionalNumber(value.max_tokens) &&
     optionalPricing(value.pricing)
+  );
+}
+
+/** True for caller aborts and the fetch helpers' own hard timeouts. */
+function isAbort(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
   );
 }
 
