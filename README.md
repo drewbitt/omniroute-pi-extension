@@ -66,7 +66,7 @@ npm install
 npm run check
 ```
 
-The check command runs the TypeScript compiler, syntax checks, and tests for provider loading, authentication, catalog refresh, persistence, cancellation, and Chat Completions tool calls.
+The check command runs the TypeScript compiler, Biome (lint + formatting), syntax checks, and tests for provider loading, authentication, catalog refresh, persistence, cancellation, and Chat Completions tool calls. Run `npm run format` to apply fixes.
 
 This project is based on [xz-dev/omniroute-pi-extension](https://github.com/xz-dev/omniroute-pi-extension). See [CONTEXT.md](./CONTEXT.md) for implementation notes and history.
 

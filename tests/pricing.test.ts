@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { afterEach, describe, it } from "node:test";
+import type { ApiKeyCredential, Provider } from "@earendil-works/pi-ai";
 import { createOmniRouteProvider } from "../index.ts";
 import { BASE_URL_ENV, fetchPricingTable } from "../src/gateway-catalog.ts";
 import {
   applyPricingTable,
+  type PricingTable,
   parsePricingTable,
   resolvePricing,
-  type PricingTable,
 } from "../src/pricing-merge.ts";
-import type { ApiKeyCredential, Provider } from "@earendil-works/pi-ai";
 
 const servers: http.Server[] = [];
 afterEach(async () => {
