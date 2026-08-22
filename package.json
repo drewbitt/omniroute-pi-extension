@@ -1,7 +1,7 @@
 {
   "name": "omniroute-pi-extension",
   "version": "0.3.2",
-  "description": "Pi extension for OmniRoute: live model catalog, token costs per turn, and per-model reasoning effort. No static model lists to maintain.",
+  "description": "Every OmniRoute model in Pi: live catalog sync, per-turn token costs, and reasoning effort matched to each model.",
   "license": "MIT",
   "keywords": [
     "pi-package",
