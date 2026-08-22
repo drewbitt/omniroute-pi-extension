@@ -6,6 +6,18 @@
 
 Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gateway in [Pi](https://pi.dev). The extension loads the gateway's live model catalog and sends requests through Pi's built-in OpenAI Chat Completions transport.
 
+## Why this one
+
+There are many OmniRoute extensions for Pi. Most stop at copying the raw `/v1/models` list into Pi. This one also:
+
+- Merges OmniRoute's pricing table into model metadata, so Pi can show what each turn cost.
+- Cleans the catalog before exposing it: reasoning-effort variants that the base model already covers are folded away, rows that mirror their declared parent under another namespace are dropped, and duplicate IDs cannot break a refresh. On large gateways this removes hundreds of picker entries.
+- Handles reasoning effort correctly: tiers come from each model's advertised capabilities, models without advertised tiers get a safe default map, and turning thinking off never sends a field the upstream provider rejects.
+- Refreshes defensively: hard fetch timeouts, abort-safe publication, and failed syncs keep the previous catalog. Restored catalogs work offline, so subagents and one-shot runs still see models.
+- Ships with a test suite covering provider loading, auth, catalog refresh, persistence, cancellation, and Chat Completions tool calls.
+
+This is a provider extension, not a gateway manager. It does not create combos, edit provider settings, or start servers; OmniRoute itself owns all of that.
+
 ## Install
 
 ```bash
@@ -47,7 +59,6 @@ After a sync the footer shows the loaded model count and sync time. On first use
 ## How models are handled
 
 - OmniRoute stays the source of truth. The extension does not create or rename model IDs, aliases, combos, `auto/*` routes, or reasoning variants.
-- Rows that exactly mirror their declared parent under another namespace are dropped as duplicates.
 - Chat-capable models keep their OmniRoute IDs unchanged in Pi's model picker.
 - Pi handles credentials, streaming, and tool calls.
 - Each secret-key credential gets its own refreshed catalog instead of sharing one.
