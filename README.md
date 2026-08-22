@@ -6,17 +6,13 @@
 
 Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gateway in [Pi](https://pi.dev). The extension loads the gateway's live model catalog and sends requests through Pi's built-in OpenAI Chat Completions transport.
 
-## Why this one
+## Features
 
-There are many OmniRoute extensions for Pi. Most stop at copying the raw `/v1/models` list into Pi. This one also:
-
-- Merges OmniRoute's pricing table into model metadata, so Pi can show what each turn cost.
-- Cleans the catalog before exposing it: reasoning-effort variants that the base model already covers are folded away, rows that mirror their declared parent under another namespace are dropped, and duplicate IDs cannot break a refresh. On large gateways this removes hundreds of picker entries.
-- Handles reasoning effort correctly: tiers come from each model's advertised capabilities, models without advertised tiers get a safe default map, and turning thinking off never sends a field the upstream provider rejects.
-- Refreshes defensively: hard fetch timeouts, abort-safe publication, and failed syncs keep the previous catalog. Restored catalogs work offline, so subagents and one-shot runs still see models.
-- Ships with a test suite covering provider loading, auth, catalog refresh, persistence, cancellation, and Chat Completions tool calls.
-
-This is a provider extension, not a gateway manager. It does not create combos, edit provider settings, or start servers; OmniRoute itself owns all of that.
+- Model list synced through Pi's provider lifecycle, so `/model`, Ctrl+P, and `pi --list-models` all see gateway models.
+- Token costs on every turn, merged from OmniRoute's pricing table.
+- Duplicate rows cleaned up before they reach the picker: effort-suffixed variants fold into their base models, and aliases of an existing row are dropped.
+- Reasoning effort follows what each model supports, with safe defaults for models that advertise no tiers.
+- A failed sync keeps your current model list, and cached catalogs stay available offline for subagents.
 
 ## Install
 
