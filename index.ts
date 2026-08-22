@@ -142,6 +142,27 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
   };
 }
 
+// Footer chip: model count plus the time of the last successful sync this
+// session. Left unset when nothing is loaded so users who register the
+// provider but do not use it see no noise.
+let lastSyncedAt: number | undefined;
+// Only the registry and footer are needed; every pi event/command context
+// satisfies this shape.
+type StatusContext = Pick<ExtensionCommandContext, "modelRegistry" | "ui">;
+
+function setStatus(ctx: StatusContext): void {
+  const count =
+    ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels().length ?? 0;
+  if (!count) return;
+  const synced = lastSyncedAt
+    ? ` · synced ${new Date(lastSyncedAt).toLocaleTimeString()}`
+    : "";
+  ctx.ui.setStatus(
+    PROVIDER_ID,
+    `${PROVIDER_NAME}: ${count.toLocaleString()} models${synced}`,
+  );
+}
+
 async function showStatus(ctx: ExtensionCommandContext): Promise<void> {
   const auth = await ctx.modelRegistry.getProviderAuth(PROVIDER_ID);
   const count =
@@ -173,8 +194,11 @@ async function syncModels(ctx: ExtensionCommandContext): Promise<void> {
     );
     return;
   }
-  const existingCount =
-    ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels().length ?? 0;
+  const existing = ctx.modelRegistry
+    .getProvider(PROVIDER_ID)
+    ?.getModels();
+  const existingCount = existing?.length ?? 0;
+  const beforeIds = new Set(existing?.map((model) => model.id) ?? []);
   const signal = AbortSignal.timeout(15_000);
   const result = await ctx.modelRegistry.refresh({
     providers: [PROVIDER_ID],
@@ -199,16 +223,42 @@ async function syncModels(ctx: ExtensionCommandContext): Promise<void> {
     );
     return;
   }
-  const count =
-    ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels().length ?? 0;
+  const after =
+    ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels() ?? [];
+  const added = after.filter((model) => !beforeIds.has(model.id)).length;
+  const afterIds = new Set(after.map((model) => model.id));
+  const removed = [...beforeIds].filter((id) => !afterIds.has(id)).length;
+  const parts: string[] = [];
+  if (added) parts.push(`+${added} new`);
+  if (removed) parts.push(`-${removed} removed`);
+  const delta = parts.length ? ` (${parts.join(", ")})` : "";
   ctx.ui.notify(
-    `OmniRoute synced ${count} model${count === 1 ? "" : "s"}.`,
+    `OmniRoute synced ${after.length.toLocaleString()} model${
+      after.length === 1 ? "" : "s"
+    }${delta}.`,
     "info",
   );
+  lastSyncedAt = Date.now();
+  setStatus(ctx);
 }
 
 export default function omniRouteExtension(pi: ExtensionAPI): void {
   pi.registerProvider(createOmniRouteProvider());
+  pi.on("session_start", async (_event, ctx) => {
+    const auth = await ctx.modelRegistry.getProviderAuth(PROVIDER_ID);
+    if (!auth) {
+      const count =
+        ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels().length ?? 0;
+      if (!count) {
+        ctx.ui.notify(
+          `OmniRoute detected but not configured. Run /login ${PROVIDER_ID} or /omni help.`,
+          "info",
+        );
+      }
+      return;
+    }
+    setStatus(ctx);
+  });
   pi.registerCommand("omni", {
     description: "Show OmniRoute status or refresh its model catalog",
     getArgumentCompletions(prefix) {

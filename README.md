@@ -45,6 +45,8 @@ Both root URLs and URLs ending in `/v1` work.
 | `/omni help` | Show command help |
 | `/login omniroute` | Change the endpoint or API key |
 
+After a sync the footer shows the loaded model count and sync time. If the extension is registered but never configured, the first session start points at `/login omniroute`.
+
 ## How models are handled
 
 OmniRoute remains the source of truth for model IDs, aliases, combos, `auto/*` routes, reasoning variants, visibility, and catalog metadata. The extension does not create or rename those entries. Rows that exactly mirror their declared parent under another namespace are dropped as duplicates. For chat-capable models exposed to Pi, the OmniRoute model ID is preserved unchanged.
