@@ -47,7 +47,7 @@ Both root URLs and URLs ending in `/v1` work.
 
 ## How models are handled
 
-OmniRoute remains the source of truth for model IDs, aliases, combos, `auto/*` routes, reasoning variants, visibility, and catalog metadata. The extension does not create or rename those entries. For chat-capable models exposed to Pi, the OmniRoute model ID is preserved unchanged.
+OmniRoute remains the source of truth for model IDs, aliases, combos, `auto/*` routes, reasoning variants, visibility, and catalog metadata. The extension does not create or rename those entries. Rows that exactly mirror their declared parent under another namespace are dropped as duplicates. For chat-capable models exposed to Pi, the OmniRoute model ID is preserved unchanged.
 
 Pi handles credentials, streaming, and tool calls. Secret-key catalogs are refreshed instead of being reused across credentials. The extension does not modify `models.json` or keep its own cache.
 

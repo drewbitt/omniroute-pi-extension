@@ -67,6 +67,24 @@ function dropRedundantEffortVariants(
   });
 }
 
+// Rows whose id repeats their declared parent's basename under a different
+// namespace are provider mirrors (`command-code/claude-opus-4-6` ->
+// `cmd/claude-opus-4-6`). When the parent row survives, the mirror only adds
+// a duplicate picker entry and is dropped.
+
+function isExactProviderMirror(
+  id: string,
+  parent: string | null | undefined,
+  eligible: ReadonlySet<string>,
+): boolean {
+  if (!parent || !eligible.has(parent)) return false;
+  const separator = id.indexOf("/");
+  const parentSeparator = parent.indexOf("/");
+  if (separator <= 0 || parentSeparator <= 0) return false;
+  if (id.slice(0, separator) === parent.slice(0, parentSeparator)) return false;
+  return id.slice(separator + 1) === parent.slice(parentSeparator + 1);
+}
+
 export function normalizeModels(
   providerId: string,
   baseUrl: string,
@@ -81,7 +99,9 @@ export function normalizeModels(
     seen.add(row.id);
     models.push(row);
   }
+  const eligible = new Set(models.map((model) => model.id));
   return models
+    .filter((model) => !isExactProviderMirror(model.id, model.parent, eligible))
     .map((model) => toModel(providerId, baseUrl, model))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
