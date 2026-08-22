@@ -1,35 +1,29 @@
 import type { OmniRouteModel } from "./gateway-catalog.ts";
 
 /**
- * Enrich unpriced catalog rows with the gateway's `/api/pricing` table.
+ * Fill in pricing for catalog rows that /v1/models leaves unpriced, using the
+ * gateway's `/api/pricing` table.
  *
- * `/v1/models` only carries per-model pricing when the provider id matches a
- * pricing namespace exactly (e.g. `opencode-go`, `kiro`, `gemini`). Some
- * providers are priced under a different namespace — e.g. `opencode` rows use
- * the `opencode-go` rates — so those rows arrive with `pricing: null` and
- * would otherwise map to a zero Pi cost.
+ * Rows only carry per-model pricing when their provider id matches a pricing
+ * namespace exactly. Some providers price under a different namespace (`oc`/
+ * `opencode` rows use `opencode-go` rates), so those arrive with no pricing
+ * and would otherwise show as zero cost in pi.
  *
- * Flat-rate / subscription providers are never priced per token (the user is
- * billed a fixed fee, not per token). Upstream (`flatRateProviders.ts`, issues
- * #5552/#9067) surfaces these as $0, and the resolver below short-circuits
- * them before any tier so a resold list price — e.g. Claude Code's `cc` rates
- * leaking onto Command Code — can never be attributed. Such rows stay
- * unpriced and map to a zero cost.
+ * Flat-rate providers (coding plans, web sessions, Command Code, Claude Code;
+ * upstream flatRateProviders.ts, #5552/#9067) bill a subscription, not per
+ * token. They are excluded before any lookup so resold list prices cannot be
+ * attributed to them.
  *
- * Resolution order, applied only to rows that lack explicit pricing:
- *   1. Exact match on `owned_by` (catalog provider id == pricing namespace).
- *   2. Alias map: catalog provider id or the row id's first path segment maps
- *      to a pricing namespace (e.g. `opencode` → `opencode-go`).
- *   3. Unambiguous basename: the model basename (`deepseek-v4-flash`) exists in
- *      exactly one pricing namespace — use it. Ambiguous basenames (present in
- *      multiple namespaces) are left unpriced so a resold model is never
- *      attributed a rate from a different reseller.
+ * Lookup order for unpriced rows:
+ *   1. `owned_by` matches a namespace exactly.
+ *   2. The provider id or id prefix maps through NAMESPACE_ALIASES.
+ *   3. The model basename appears in exactly one namespace (ambiguous means
+ *      unpriced: never borrow another reseller's rate).
  *
- * The whole feature is best-effort: any fetch/parse failure keeps the original
- * rows untouched so catalog discovery never depends on the management API.
+ * Best effort: any fetch/parse failure keeps the original rows untouched.
  */
 
-export type PricingEntry = {
+type PricingEntry = {
   input?: number;
   output?: number;
   cached?: number;
@@ -56,7 +50,7 @@ const NAMESPACE_ALIASES: Record<string, string> = {
  * free tier. Command Code is a subscription service that upstream tracks as a
  * quota plan (#9921) but has not yet added to its flat-rate set, so it is
  * included here directly. Upstream deliberately keeps `codex`/`cx`, `byteplus`,
- * `minimax-cn`, and `glm-thinking` metered — those stay priced.
+ * `minimax-cn`, and `glm-thinking` metered; those stay priced.
  */
 const FLAT_RATE_PROVIDERS: ReadonlySet<string> = new Set([
   // Coding plans (mirrors upstream FLAT_RATE_SUBSCRIPTION_PROVIDER_IDS)
@@ -241,7 +235,7 @@ export function resolvePricing(
     }
   }
 
-  // Unambiguous basename fallback — only when exactly one namespace prices it.
+  // Unambiguous basename fallback: only used when exactly one namespace prices it.
   // With a prebuilt index this is O(1) per row instead of a scan of every
   // namespace (measured 2.5s per refresh at 278 namespaces x ~11k entries);
   // without one, fall back to the scan so direct callers stay correct.

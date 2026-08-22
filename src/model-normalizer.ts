@@ -3,15 +3,11 @@ import type { OmniRouteModel } from "./gateway-catalog.ts";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
-// Sanity ceiling for a model's output budget. The gateway's `max_output_tokens`
-// is occasionally impossible — e.g. command-code deepseek-v4-pro is advertised
-// as 1,048,600 against a 1,000,000 context window (a stale synced `limit_output`;
-// upstream issue class #6524: `limit_output` ≈ `limit_context`). Pi surfaces
-// `maxTokens` as the model's output ceiling (displayed in list-models, used as a
-// thinking-budget cap, and forwarded as `max_tokens` in some paths), so an
-// inflated value breaks the model upstream. 393,216 (384K) is the largest output
-// any provider we route to accepts, so it is a valid global bound: genuine large
-// outputs pass through untouched while impossible multi-million values are cut.
+// The gateway sometimes advertises an impossible output budget (a stale sync
+// can set max_output_tokens above the context window, upstream #6524). Pi
+// forwards this value as the model's output cap, which 400s upstream. 384K is
+// the largest output any routed provider accepts; larger values are clamped.
+
 const MAX_OUTPUT_TOKENS_CEILING = 393_216;
 const NON_CHAT_TYPES = new Set([
   "embedding",
@@ -34,15 +30,10 @@ const EFFORTS = new Set([
 
 type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-/**
- * Fallback effort map for reasoning models that advertise NO effort tiers:
- * without a map, pi treats every level as supported and forwards the raw
- * level string. Live-measured against v3.8.50: low/medium/high/xhigh are the
- * canonical vocabulary and accepted everywhere (mappers down-shift xhigh for
- * models that lack it), while `max` 400s on every route without a native max
- * tier and `minimal` is not part of the canonical set — both are marked
- * unsupported so pi clamps to the nearest supported level instead.
- */
+// For reasoning models that advertise no effort tiers: low through xhigh are
+// accepted everywhere (xhigh gets down-shifted per provider), while raw `max`
+// and `minimal` are not canonical and 400 on some routes. Marking them null
+// makes pi clamp to a supported level instead of sending them.
 const DEFAULT_EFFORT_MAP = {
   off: null,
   minimal: null,
@@ -53,15 +44,11 @@ const DEFAULT_EFFORT_MAP = {
   max: null,
 } as const;
 
-/**
- * Effort-suffixed catalog rows (`<model>-low`, `-xhigh`, …) are gateway-
- * synthesized aliases: at request time the suffix is stripped back to the
- * base model and re-emerges as reasoning_effort, which pi already expresses
- * through thinking levels. When the base row exists AND advertises that tier
- * the variant is pure duplication — measured 980 of 3922 live rows — and is
- * dropped. Orphan variants (base absent) and tiers the base does not
- * advertise are kept: they may be the only way to reach that effort.
- */
+// Effort-suffixed rows (`<model>-low`, `-xhigh`, ...) are aliases the gateway
+// synthesizes for clients that cannot send reasoning_effort. pi picks effort
+// via thinking levels, so when the base row exists and advertises the tier,
+// the variant adds nothing and is dropped. Variants without a base row, or
+// for tiers the base does not advertise, are kept.
 const EFFORT_SUFFIX = /^(.*?)-(none|minimal|low|medium|high|xhigh|max)$/;
 
 function dropRedundantEffortVariants(
@@ -89,8 +76,7 @@ export function normalizeModels(
   const seen = new Set<string>();
   for (const row of dropRedundantEffortVariants(rows)) {
     if (!isConversational(row)) continue;
-    // First-wins on duplicate ids: one misconfigured gateway alias must not
-    // brick discovery for the entire catalog.
+    // First id wins; a duplicate must not fail the whole refresh.
     if (seen.has(row.id)) continue;
     seen.add(row.id);
     models.push(row);
@@ -201,17 +187,9 @@ function thinkingLevelMap(efforts: readonly Effort[]) {
   const available = new Set(efforts);
   if (available.size === 0) return undefined;
   return {
-    // "off" must OMIT reasoning_effort entirely (null), never send "none".
-    // Measured against a live v3.8.50 gateway: some providers advertise
-    // `none` in capabilities.effort_tiers yet reject it upstream
-    // (`reasoning.effort does not support none`), and some provider schemas
-    // reject it outright (`expected one of low|medium|high|xhigh|max`). Since
-    // pi sends map.off on every no-effort request (title generation, quick
-    // tasks), any non-null value re-creates those 400s. Omission is what the
-    // gateways before #6241/#10957 expected and still works everywhere; the
-    // cost is that #10957's vendor-default-effort injection can fire on such
-    // requests — acceptable, because an injected default is the vendor's own
-    // recommended effort for the model.
+    // Never send "none": some providers reject it even when they advertise it,
+    // and pi sends map.off on every no-effort request (title generation etc.).
+    // Omitting the field entirely works everywhere. See CONTEXT.md.
     off: null,
     minimal: available.has("minimal") ? "minimal" : null,
     low: available.has("low") ? "low" : null,

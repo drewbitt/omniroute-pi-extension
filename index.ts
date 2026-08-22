@@ -109,8 +109,7 @@ export function createOmniRouteProvider(): Provider<"openai-completions"> {
       );
       if (context.signal.aborted) return;
       // Best-effort pricing enrichment from the management table. Any
-      // failure (no management rights, endpoint absent, parse error) keeps
-      // the original catalog rows — discovery never depends on this.
+      // failure keeps the original catalog rows; discovery never depends on it.
       const pricingPayload = await fetchPricingTable(
         { baseUrl },
         apiKey,

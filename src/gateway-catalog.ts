@@ -149,8 +149,7 @@ export async function fetchModelCatalog(
         Accept: "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      // Hard cap so an ambient signal (startup refresh) cannot hang forever
-      // on a stalled server; /omni sync already bounds the whole refresh.
+      // Cap the wait so a startup refresh cannot hang on a stalled server.
       signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     });
   } catch (error) {
@@ -180,9 +179,8 @@ export async function fetchModelCatalog(
   if (!rows) {
     throw new Error("OmniRoute model discovery returned an invalid catalog");
   }
-  // Tolerate isolated malformed rows: drop them instead of rejecting a
-  // catalog of thousands otherwise-fine models. An empty catalog is
-  // legitimate (a gateway may have zero configured models).
+  // Drop malformed rows instead of failing the whole catalog. An empty
+  // catalog is valid (a gateway may have zero configured models).
   return rows.filter(isModelRow);
 }
 
@@ -291,7 +289,7 @@ function isModelRow(value: unknown): value is OmniRouteModel {
   );
 }
 
-/** True for caller aborts and the fetch helpers' own hard timeouts. */
+/** True for caller aborts and the helpers' own timeouts. */
 function isAbort(error: unknown): boolean {
   return (
     error instanceof Error &&
