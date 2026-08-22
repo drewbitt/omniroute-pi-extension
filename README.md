@@ -1,5 +1,9 @@
 # OmniRoute for Pi
 
+[![CI](https://github.com/drewbitt/omniroute-pi-extension/actions/workflows/ci.yml/badge.svg)](https://github.com/drewbitt/omniroute-pi-extension/actions/workflows/ci.yml)
+![Pi](https://img.shields.io/badge/pi-0.84.2-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+
 Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gateway in [Pi](https://pi.dev). The extension loads the gateway's live model catalog and sends requests through Pi's built-in OpenAI Chat Completions transport.
 
 ## Install
@@ -8,33 +12,26 @@ Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gatewa
 pi install git:github.com/drewbitt/omniroute-pi-extension
 ```
 
-Restart Pi after installation, or run `/reload` in an existing session.
-
-Tested with Pi 0.84.2.
+Restart Pi after installing, or run `/reload` in an open session.
 
 ## Set up
 
-You need a running, reachable [OmniRoute server](https://github.com/diegosouzapw/OmniRoute). Start Pi and run:
+Start Pi and run:
 
 ```text
 /login omniroute
 ```
 
-Enter your OmniRoute URL, such as `http://127.0.0.1:20128`, and an API key if your server requires one. Then refresh the catalog and choose a model:
+- Enter your OmniRoute URL, such as `http://127.0.0.1:20128`. Both root URLs and URLs ending in `/v1` work.
+- Enter an API key if your server requires one.
+- Run `/omni sync`, then pick a model with `/model`.
 
-```text
-/omni sync
-/model
-```
-
-You can also set environment variables before starting Pi:
+Environment variables work instead of `/login`:
 
 ```bash
 export OMNIROUTE_BASE_URL=http://127.0.0.1:20128
 export OMNIROUTE_API_KEY=your-key  # optional on servers without API-key auth
 ```
-
-Both root URLs and URLs ending in `/v1` work.
 
 ## Commands
 
@@ -45,33 +42,38 @@ Both root URLs and URLs ending in `/v1` work.
 | `/omni help` | Show command help |
 | `/login omniroute` | Change the endpoint or API key |
 
-After a sync the footer shows the loaded model count and sync time. If the extension is registered but never configured, the first session start points at `/login omniroute`.
+After a sync the footer shows the loaded model count and sync time. On first use, before you configure anything, Pi shows a hint pointing at `/login omniroute`.
 
 ## How models are handled
 
-OmniRoute remains the source of truth for model IDs, aliases, combos, `auto/*` routes, reasoning variants, visibility, and catalog metadata. The extension does not create or rename those entries. Rows that exactly mirror their declared parent under another namespace are dropped as duplicates. For chat-capable models exposed to Pi, the OmniRoute model ID is preserved unchanged.
-
-Pi handles credentials, streaming, and tool calls. Secret-key catalogs are refreshed instead of being reused across credentials. The extension does not modify `models.json` or keep its own cache.
-
-## Moving from an older OmniRoute extension
-
-Remove the old package before installing this one. Older releases may also leave a `providers.omni` entry with `"api": "omni-prompt-tools"` in `~/.pi/agent/models.json`. That API no longer exists in Pi.
-
-Back up the file, remove only that legacy `providers.omni` block, then run `/login omniroute`. Leave unrelated providers and model overrides alone.
+- OmniRoute stays the source of truth. The extension does not create or rename model IDs, aliases, combos, `auto/*` routes, or reasoning variants.
+- Rows that exactly mirror their declared parent under another namespace are dropped as duplicates.
+- Chat-capable models keep their OmniRoute IDs unchanged in Pi's model picker.
+- Pi handles credentials, streaming, and tool calls.
+- Each secret-key credential gets its own refreshed catalog instead of sharing one.
+- The extension never writes `models.json` and keeps no cache of its own.
 
 ## Development
 
-Development requires Node.js 22.19 or newer.
-
 ```bash
 npm install
-npm run check
+npm run check    # typecheck, lint, format check, syntax checks, tests
+npm run format   # apply fixes
 ```
 
-The check command runs the TypeScript compiler, Biome (lint + formatting), syntax checks, and tests for provider loading, authentication, catalog refresh, persistence, cancellation, and Chat Completions tool calls. Run `npm run format` to apply fixes.
+Tests also run against a real gateway when you opt in:
 
-This project is based on [xz-dev/omniroute-pi-extension](https://github.com/xz-dev/omniroute-pi-extension). See [CONTEXT.md](./CONTEXT.md) for implementation notes and history.
+```bash
+OMNIROUTE_LIVE=1 \
+OMNIROUTE_LIVE_BASE_URL=http://127.0.0.1:20128/v1 \
+OMNIROUTE_LIVE_API_KEY=your-key \
+npm test
+```
+
+Set `OMNIROUTE_LIVE_INFERENCE=1` as well to send real completions. Gateway routes vary in reliability: `cmd/*` and `openrouter/*` models answer consistently, while many other namespaces sit behind cooldowns or broken upstreams at any given moment.
+
+This project started as a fork of [xz-dev/omniroute-pi-extension](https://github.com/xz-dev/omniroute-pi-extension) and has diverged substantially. See [CONTEXT.md](./CONTEXT.md) for implementation notes.
 
 ## License
 
-MIT
+[MIT](./LICENSE).
