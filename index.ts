@@ -194,9 +194,7 @@ async function syncModels(ctx: ExtensionCommandContext): Promise<void> {
     );
     return;
   }
-  const existing = ctx.modelRegistry
-    .getProvider(PROVIDER_ID)
-    ?.getModels();
+  const existing = ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels();
   const existingCount = existing?.length ?? 0;
   const beforeIds = new Set(existing?.map((model) => model.id) ?? []);
   const signal = AbortSignal.timeout(15_000);
@@ -223,8 +221,7 @@ async function syncModels(ctx: ExtensionCommandContext): Promise<void> {
     );
     return;
   }
-  const after =
-    ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels() ?? [];
+  const after = ctx.modelRegistry.getProvider(PROVIDER_ID)?.getModels() ?? [];
   const added = after.filter((model) => !beforeIds.has(model.id)).length;
   const afterIds = new Set(after.map((model) => model.id));
   const removed = [...beforeIds].filter((id) => !afterIds.has(id)).length;
