@@ -10,6 +10,9 @@
     "omniroute"
   ],
   "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
   "scripts": {
     "check:syntax": "node --check index.ts && node --check src/*.ts && node --check tests/*.test.ts",
     "check": "npm run typecheck && npm run lint && npm run check:syntax && npm test",
