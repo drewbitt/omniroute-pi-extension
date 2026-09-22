@@ -94,7 +94,7 @@ npm test
 
 Set `OMNIROUTE_LIVE_INFERENCE=1` as well to send real completions. Gateway routes vary in reliability: `cmd/*` and `openrouter/*` models answer consistently, while many other namespaces sit behind cooldowns or broken upstreams at any given moment.
 
-The live suite also asserts the gateway contract this extension depends on: every live catalog row must carry the session-affinity compatibility pair, and one real request must come back with the caller-supplied session echoed in `X-OmniRoute-Session-Id` and the opted-in compression plan echoed in `X-OmniRoute-Compression`. Those assertions need a gateway, so they are skipped without `OMNIROUTE_LIVE=1`.
+A few checks only work against a running gateway: that every catalog row still opts into session affinity, and that a real request comes back with the session id and the applied compression plan echoed in the response headers. Run them after changing catalog normalization or request headers — a fixture cannot tell you the gateway stopped honoring a header.
 
 This project started as a fork of [xz-dev/omniroute-pi-extension](https://github.com/xz-dev/omniroute-pi-extension) and has diverged substantially. See [CONTEXT.md](./CONTEXT.md) for implementation notes.
 
