@@ -85,10 +85,25 @@ function isExactProviderMirror(
   return id.slice(separator + 1) === parent.slice(parentSeparator + 1);
 }
 
+/**
+ * Build-time gateway options. Everything defaults off, so callers that omit
+ * them (and every test) keep the conservative behavior.
+ */
+export type NormalizeOptions = {
+  /**
+   * Opt in to OpenAI strict-schema sampling for rows that advertise
+   * `capabilities.structured_output`. Unset keeps pi's default (no `strict`
+   * field), because pi requires an endpoint to opt in and one gateway model
+   * id can route to many upstreams.
+   */
+  strictTools?: boolean;
+};
+
 export function normalizeModels(
   providerId: string,
   baseUrl: string,
   rows: readonly OmniRouteModel[],
+  options: NormalizeOptions = {},
 ): readonly Model<"openai-completions">[] {
   const models: OmniRouteModel[] = [];
   const seen = new Set<string>();
@@ -102,7 +117,7 @@ export function normalizeModels(
   const eligible = new Set(models.map((model) => model.id));
   return models
     .filter((model) => !isExactProviderMirror(model.id, model.parent, eligible))
-    .map((model) => toModel(providerId, baseUrl, model))
+    .map((model) => toModel(providerId, baseUrl, model, options))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
@@ -145,6 +160,7 @@ function toModel(
   providerId: string,
   baseUrl: string,
   model: OmniRouteModel,
+  options: NormalizeOptions,
 ): Model<"openai-completions"> {
   const efforts = parseEfforts(model.capabilities?.effort_tiers);
   const reasoning =
@@ -185,6 +201,38 @@ function toModel(
     },
     contextWindow,
     maxTokens: Math.min(maxTokens, contextWindow, MAX_OUTPUT_TOKENS_CEILING),
+    compat: compatFor(model, options),
+  };
+}
+
+/**
+ * OpenAI-compatibility overrides pi acts on per request.
+ *
+ * `x-session-id` (the `openrouter` session-affinity shape) is always sent.
+ * OmniRoute reads it in `extractSessionAffinityKey` and
+ * `extractExternalSessionId`, and uses it for sticky connection selection and
+ * for `promptCacheAffinityEnabled` routing. Without it the gateway falls back
+ * to hashing the first input message, so affinity survives neither compaction
+ * nor any other rewrite of the head of the transcript. pi only emits the
+ * header when its own session id is available, so keyless one-shot runs stay
+ * header-free. `getCompat()` merges these two fields over its detected
+ * defaults, so every other detected value is preserved.
+ *
+ * `supportsStrictMode` stays off unless explicitly requested: pi treats
+ * strict sampling as an endpoint opt-in, and a gateway model id can be routed
+ * to an upstream that rejects the `strict` tool field.
+ */
+function compatFor(
+  model: OmniRouteModel,
+  options: NormalizeOptions,
+): Model<"openai-completions">["compat"] {
+  const structuredOutput = model.capabilities?.structured_output === true;
+  return {
+    sendSessionAffinityHeaders: true,
+    sessionAffinityFormat: "openrouter",
+    ...(options.strictTools && structuredOutput
+      ? { supportsStrictMode: true }
+      : {}),
   };
 }
 

@@ -1,12 +1,27 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { after, before, it } from "node:test";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { createOmniRouteProvider } from "../index.ts";
+import { normalizeModels } from "../src/model-normalizer.ts";
 
 let server: http.Server;
 let baseUrl: string;
 const requests: Array<Record<string, unknown>> = [];
 const authHeaders: string[] = [];
+// Per-request headers the provider actually sent, in order.
+const requestHeaders: Array<Record<string, string | string[] | undefined>> = [];
+
+// One pi session id, so both requests exercise the same affinity header.
+const SESSION_ID = "01a0cab8-0356-75a5-8482-336771dceb7f";
+
+function affinityHeaders(): Array<string | undefined> {
+  return requestHeaders.map((headers) =>
+    headers["x-session-id"] === undefined
+      ? undefined
+      : String(headers["x-session-id"]),
+  );
+}
 
 function send(reply: http.ServerResponse, chunks: unknown[]) {
   reply.writeHead(200, { "content-type": "text/event-stream" });
@@ -18,6 +33,7 @@ before(async () => {
   server = http.createServer(async (request, reply) => {
     assert.equal(request.url, "/v1/chat/completions");
     authHeaders.push(String(request.headers.authorization ?? ""));
+    requestHeaders.push(request.headers);
     let raw = "";
     for await (const chunk of request) raw += chunk;
     requests.push(JSON.parse(raw));
@@ -108,18 +124,18 @@ it("streams text and an exact tool round-trip with model and bearer auth preserv
 }, async () => {
   const provider = createOmniRouteProvider();
   assert(provider.stream);
-  const model = {
-    id: "gpt-5.6-sol",
-    name: "GPT-5.6 Sol",
-    provider: "omniroute",
-    api: "openai-completions" as const,
-    baseUrl,
-    reasoning: false,
-    input: ["text"] as Array<"text" | "image">,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
-    maxTokens: 16_384,
-  };
+  // Derived through the normalizer so this stays an end-to-end check that
+  // catalog metadata reaches the wire.
+  const [model] = normalizeModels("omniroute", baseUrl, [
+    {
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      owned_by: "combo",
+      context_length: 128_000,
+      max_output_tokens: 16_384,
+    },
+  ]);
+  assert(model, "the catalog row must normalize to a model");
   const user = { role: "user" as const, content: "Use lookup", timestamp: 1 };
   const tools = [
     {
@@ -135,7 +151,9 @@ it("streams text and an exact tool round-trip with model and bearer auth preserv
   const first = await provider
     .stream(
       model,
-      { messages: [user], tools },
+      // pi folds the prompt and tool declarations into a leading system
+      // message before a provider sees a transcript.
+      normalizeContext({ messages: [user], tools }),
       { apiKey: "route-key", maxRetries: 0 },
     )
     .result();
@@ -162,8 +180,8 @@ it("streams text and an exact tool round-trip with model and bearer auth preserv
   const second = await provider
     .stream(
       model,
-      { messages: [user, first, toolResult], tools },
-      { apiKey: "route-key", maxRetries: 0 },
+      normalizeContext({ messages: [user, first, toolResult], tools }),
+      { apiKey: "route-key", maxRetries: 0, sessionId: SESSION_ID },
     )
     .result();
   assert.equal(second.stopReason, "stop");
@@ -176,4 +194,8 @@ it("streams text and an exact tool round-trip with model and bearer auth preserv
   >;
   assert.equal(secondMessages.at(-1)?.role, "tool");
   assert.equal(secondMessages.at(-1)?.tool_call_id, "call_1");
+  // Normalized models opt into the `openrouter` session-affinity shape, which
+  // is exactly the header OmniRoute reads for sticky routing and prompt-cache
+  // affinity. A run without a session id must stay header-free.
+  assert.deepEqual(affinityHeaders(), [undefined, SESSION_ID]);
 });

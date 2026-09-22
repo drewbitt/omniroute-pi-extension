@@ -52,3 +52,63 @@ describe("exact provider mirrors", () => {
     assert.equal(out.length, 2);
   });
 });
+
+describe("OpenAI-compatibility overrides", () => {
+  const rows = (extra: Partial<OmniRouteModel>) =>
+    normalizeModels("omniroute", "http://x/v1", [
+      { ...row("zai/glm-5.3-flash"), ...extra },
+    ]);
+
+  it("always opts into the session-affinity header OmniRoute reads", () => {
+    // pi-ai only emits `x-session-id` for the `openrouter` shape, and
+    // OmniRoute reads exactly that header. Without it the gateway falls back
+    // to hashing the first input message, which a compaction rewrites.
+    assert.deepEqual(rows({})[0]?.compat, {
+      sendSessionAffinityHeaders: true,
+      sessionAffinityFormat: "openrouter",
+    });
+  });
+
+  it("leaves strict sampling off unless the caller opts in", () => {
+    const out = normalizeModels(
+      "omniroute",
+      "http://x/v1",
+      [
+        {
+          ...row("zai/glm-5.3-flash"),
+          capabilities: { structured_output: true },
+        },
+      ],
+      {},
+    );
+    assert.equal(out[0]?.compat?.supportsStrictMode, undefined);
+  });
+
+  it("enables strict sampling only for rows that advertise it", () => {
+    const [advertised] = normalizeModels(
+      "omniroute",
+      "http://x/v1",
+      [
+        {
+          ...row("zai/glm-5.3-flash"),
+          capabilities: { structured_output: true },
+        },
+      ],
+      { strictTools: true },
+    );
+    assert.equal(advertised?.compat?.supportsStrictMode, true);
+
+    const [silent] = normalizeModels(
+      "omniroute",
+      "http://x/v1",
+      [
+        {
+          ...row("zai/glm-5.3-flash"),
+          capabilities: { reasoning: true },
+        },
+      ],
+      { strictTools: true },
+    );
+    assert.equal(silent?.compat?.supportsStrictMode, undefined);
+  });
+});

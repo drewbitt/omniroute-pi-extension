@@ -1,7 +1,7 @@
 # OmniRoute for Pi
 
 [![CI](https://github.com/drewbitt/omniroute-pi-extension/actions/workflows/ci.yml/badge.svg)](https://github.com/drewbitt/omniroute-pi-extension/actions/workflows/ci.yml)
-![Pi](https://img.shields.io/badge/pi-0.84.2-blue)
+![Pi](https://img.shields.io/badge/pi-0.87.1-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gateway in [Pi](https://pi.dev). The extension loads the gateway's live model catalog and sends requests through Pi's built-in OpenAI Chat Completions transport.
@@ -12,6 +12,8 @@ Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gatewa
 - Token costs on every turn, merged from OmniRoute's pricing table.
 - Duplicate rows cleaned up before they reach the picker: effort-suffixed variants fold into their base models, and aliases of an existing row are dropped.
 - Reasoning effort follows what each model supports, with safe defaults for models that advertise no tiers.
+- Session affinity sent to the gateway as `x-session-id`, so sticky routing and prompt-cache affinity survive compaction instead of falling back to a hash of the first message.
+- Optional per-request gateway controls (memory/skills injection, prompt compression, response cache, strict tool schemas) that default to off and need no config file.
 - A failed sync keeps your current model list, and cached catalogs stay available offline for subagents.
 
 ## Install
@@ -40,6 +42,19 @@ Environment variables work instead of `/login`:
 export OMNIROUTE_BASE_URL=http://127.0.0.1:20128
 export OMNIROUTE_API_KEY=your-key  # optional on servers without API-key auth
 ```
+
+## Gateway controls
+
+These are optional, read from the environment on every request, and off by default, so an unconfigured install sends exactly the same bytes as one without this feature. Values accept `1`, `true`, `yes`, or `on`.
+
+| Variable | Effect |
+| --- | --- |
+| `OMNIROUTE_NO_MEMORY` | Skip OmniRoute's memory + skills injection, which costs tokens on every call and duplicates what Pi already provides |
+| `OMNIROUTE_COMPRESSION` | Override OmniRoute's prompt-compression plan: `off`, `default`, `engine:<id>`, or a combo id |
+| `OMNIROUTE_NO_CACHE` | Bypass OmniRoute's response cache |
+| `OMNIROUTE_STRICT_TOOLS` | Send strict JSON-schema tool definitions for models that advertise structured output; run `/omni sync` after changing it |
+
+OmniRoute reports the plan it applied in the `X-OmniRoute-Compression` response header, so `/omni`-side behavior is verifiable from a response. Session affinity needs no configuration: Pi's session id is always sent as `x-session-id`.
 
 ## Commands
 
@@ -78,6 +93,8 @@ npm test
 ```
 
 Set `OMNIROUTE_LIVE_INFERENCE=1` as well to send real completions. Gateway routes vary in reliability: `cmd/*` and `openrouter/*` models answer consistently, while many other namespaces sit behind cooldowns or broken upstreams at any given moment.
+
+The live suite also asserts the gateway contract this extension depends on: every live catalog row must carry the session-affinity compatibility pair, and one real request must come back with the caller-supplied session echoed in `X-OmniRoute-Session-Id` and the opted-in compression plan echoed in `X-OmniRoute-Compression`. Those assertions need a gateway, so they are skipped without `OMNIROUTE_LIVE=1`.
 
 This project started as a fork of [xz-dev/omniroute-pi-extension](https://github.com/xz-dev/omniroute-pi-extension) and has diverged substantially. See [CONTEXT.md](./CONTEXT.md) for implementation notes.
 

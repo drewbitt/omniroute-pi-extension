@@ -22,6 +22,8 @@ export type OmniRouteModel = {
     vision?: boolean;
     attachment?: boolean;
     effort_tiers?: unknown;
+    /** models.dev capability: the model accepts JSON-schema strict sampling. */
+    structured_output?: boolean;
   };
   input_modalities?: string[];
   output_modalities?: string[];
@@ -66,6 +68,26 @@ export function credentialBaseUrl(
   return typeof value === "string" ? normalizeBaseUrl(value) : undefined;
 }
 
+/**
+ * Resolve the configured endpoint, preferring the stored credential value.
+ *
+ * A credential that stores the variable wins outright: an explicitly stored but
+ * unusable endpoint fails closed rather than silently falling back to an ambient
+ * value, so a typo cannot redirect traffic to a different server. `readEnv` is
+ * the ambient reader — Pi's auth context during setup and auth checks, the
+ * process environment during a catalog refresh. This is the single
+ * implementation of that precedence rule.
+ */
+export async function resolveConfiguredBaseUrl(
+  credential: ApiKeyCredential | undefined,
+  readEnv: (name: string) => string | undefined | Promise<string | undefined>,
+): Promise<string | undefined> {
+  if (credential?.env?.[BASE_URL_ENV] !== undefined)
+    return credentialBaseUrl(credential);
+  const ambient = await readEnv(BASE_URL_ENV);
+  return normalizeBaseUrl(ambient ?? "");
+}
+
 export function createOmniRouteAuth(): ApiKeyAuth {
   return {
     name: "OmniRoute API key",
@@ -98,10 +120,9 @@ export function createOmniRouteAuth(): ApiKeyAuth {
       };
     },
     async check({ ctx, credential }) {
-      const configured =
-        credential?.env?.[BASE_URL_ENV] === undefined
-          ? normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "")
-          : credentialBaseUrl(credential);
+      const configured = await resolveConfiguredBaseUrl(credential, (name) =>
+        ctx.env(name),
+      );
       return configured
         ? {
             type: "api_key",
@@ -110,10 +131,9 @@ export function createOmniRouteAuth(): ApiKeyAuth {
         : undefined;
     },
     async resolve({ ctx, credential }) {
-      const baseUrl =
-        credential?.env?.[BASE_URL_ENV] === undefined
-          ? normalizeBaseUrl((await ctx.env(BASE_URL_ENV)) ?? "")
-          : credentialBaseUrl(credential);
+      const baseUrl = await resolveConfiguredBaseUrl(credential, (name) =>
+        ctx.env(name),
+      );
       if (!baseUrl) return undefined;
       const candidate = credential
         ? credential.key
