@@ -36,7 +36,7 @@ tested contract is:
 The Consequences section above therefore describes the pre-revision behavior and
 is superseded by this section.
 
-### Re-evaluated against pi-ai 0.87 `createProvider`
+### Re-evaluated against pi-ai `createProvider` (0.87–0.99)
 
 `createProvider({ fetchModels })` was evaluated as a replacement for the
 hand-rolled `refreshModels` and rejected. Its restore path filters stored models

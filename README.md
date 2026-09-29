@@ -1,7 +1,7 @@
 # OmniRoute for Pi
 
 [![CI](https://github.com/drewbitt/omniroute-pi-extension/actions/workflows/ci.yml/badge.svg)](https://github.com/drewbitt/omniroute-pi-extension/actions/workflows/ci.yml)
-![Pi](https://img.shields.io/badge/pi-0.87.1-blue)
+![Pi](https://img.shields.io/badge/pi-0.99.1-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 Use models from an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) gateway in [Pi](https://pi.dev). The extension loads the gateway's live model catalog and sends requests through Pi's built-in OpenAI Chat Completions transport.

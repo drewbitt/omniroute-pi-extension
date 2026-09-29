@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type {
-  Api,
+  AnyModel,
   ApiKeyCredential,
   Model,
   Provider,
@@ -128,11 +128,16 @@ function resolveApiKey(credential?: ApiKeyCredential): string {
  * another endpoint's models, including offline.
  */
 function storedCatalogFor(
-  stored: readonly Model<Api>[],
+  stored: readonly AnyModel[],
   baseUrl: string,
 ): readonly Model<"openai-completions">[] | undefined {
+  // A stored entry may mix chat with image/classifier rows (pi-ai 0.99 widened
+  // ModelsStoreEntry.models to AnyModel). Restore only the chat rows — the only
+  // kind this provider publishes — and reject the snapshot when any row is a
+  // different type or belongs to another endpoint.
   const compatible = stored.filter(
     (model): model is Model<"openai-completions"> =>
+      (model.type === undefined || model.type === "chat") &&
       model.provider === PROVIDER_ID &&
       model.api === PROVIDER_API &&
       model.baseUrl === baseUrl,
